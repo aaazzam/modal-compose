@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+import asyncio
+import importlib
+import sys
+from pathlib import Path
+
+import pytest
+
+from modal_compose.cli import init
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+def scaffolded(tmp_path: Path):
+    init(tmp_path)
+    sys.path.insert(0, str(tmp_path))
+    yield tmp_path
+    sys.path.remove(str(tmp_path))
+    for name in list(sys.modules):
+        if name == "devbox" or name.startswith("devbox."):
+            del sys.modules[name]
+
+
+class TestScaffoldedServer:
+    def test_registry_mounts_the_example_api(self, scaffolded: Path) -> None:
+        registry = importlib.import_module("devbox.registry").registry
+        assert registry.names() == ("api",)
+
+    def test_server_exposes_lifecycle_tools(self, scaffolded: Path) -> None:
+        mcp = importlib.import_module("devbox.server").mcp
+
+        async def names() -> set[str]:
+            return {tool.name for tool in await mcp.list_tools()}
+
+        assert {"create_sandbox", "kill_sandbox"} <= asyncio.run(names())
+
+    def test_server_exposes_the_file_and_shell_tools(self, scaffolded: Path) -> None:
+        mcp = importlib.import_module("devbox.server").mcp
+
+        async def names() -> set[str]:
+            return {tool.name for tool in await mcp.list_tools()}
+
+        assert {"bash", "edit", "glob", "grep", "read", "write"} <= asyncio.run(names())
+
+    def test_create_sandbox_repo_is_generated_from_the_registry(
+        self, scaffolded: Path
+    ) -> None:
+        mcp = importlib.import_module("devbox.server").mcp
+
+        async def schema() -> dict[str, object]:
+            tool = await mcp.get_tool("create_sandbox")
+            return tool.parameters["properties"]["repo"]
+
+        assert asyncio.run(schema())["enum"] == ["api"]
