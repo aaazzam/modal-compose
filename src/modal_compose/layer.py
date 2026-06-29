@@ -20,9 +20,7 @@ class Runtime(BaseModel):
     terminates: list[SandboxLifecycleHook] = Field(default_factory=list, max_length=1)
 
 
-class Layer(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
+class Layer(BaseModel, arbitrary_types_allowed=True):
     name: str
     builds: list[ImageTransform] = Field(default_factory=list, max_length=1)
     runtime: Runtime = Field(default_factory=Runtime)
@@ -43,9 +41,7 @@ class Layer(BaseModel):
         return reduce(lambda current, transform: transform(current), self.builds, image)
 
 
-class Repo(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
+class Repo(BaseModel, arbitrary_types_allowed=True):
     layers: list[Layer] = Field(min_length=1)
 
     def get_image(self, base_image: "Image") -> "Image":
