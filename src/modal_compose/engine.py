@@ -1,24 +1,27 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Iterable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Iterable
 from uuid import uuid4
 
 import anyio
 from modal import App, Sandbox, Secret
 
-from .layer import Repo
+from .layer import LifecycleBinding, Repo
 
 if TYPE_CHECKING:
     from modal import Image
 
 
-async def run_hooks(hooks: Iterable[Callable[..., Any]], sandbox: "Sandbox") -> None:
-    for hook in hooks:
-        result = hook(sandbox)
-        if inspect.isawaitable(result):
-            await result
+async def _maybe_await(result: Any) -> None:
+    if inspect.isawaitable(result):
+        await result
+
+
+async def run_hooks(bindings: Iterable[LifecycleBinding], sandbox: "Sandbox") -> None:
+    for hook, ctx in bindings:
+        await _maybe_await(hook(sandbox, ctx))
 
 
 @dataclass
@@ -45,6 +48,7 @@ class Engine:
     name: str
     base_image: "Image"
     timeout: int = 3600
+    secrets: set[Secret] = field(default_factory=set)
 
     def image(self) -> "Image":
         return self.repo.get_image(self.base_image)
@@ -55,24 +59,24 @@ class Engine:
         return built
 
     def _secrets(self) -> list[Any]:
-        secrets = list(self.repo.secrets)
+        secrets = list(self.secrets | self.repo.secrets)
         if self.repo.env:
             secrets.append(Secret.from_dict(self.repo.env))
         return secrets
 
-    async def create(self) -> Run:
+    async def create(self, image: "Image | None" = None) -> Run:
         run_id = str(uuid4())
         sandbox = await Sandbox.create.aio(
             app=self.app,
-            image=self.image(),
+            image=self.image() if image is None else image,
             encrypted_ports=self.repo.ports,
             secrets=self._secrets(),
             timeout=self.timeout,
+            workdir=self.repo.working_directory,
             tags={"box": self.name, "run": run_id},
         )
         try:
-            await sandbox.wait_until_ready.aio()
-            await run_hooks(self.repo.starts, sandbox)
+            await run_hooks(self.repo.start_bindings, sandbox)
         except BaseException:
             with anyio.CancelScope(shield=True):
                 await sandbox.terminate.aio()
@@ -80,5 +84,5 @@ class Engine:
         return Run(run_id=run_id, sandbox=sandbox)
 
     async def terminate(self, run: Run) -> None:
-        await run_hooks(self.repo.terminates, run.sandbox)
+        await run_hooks(self.repo.terminate_bindings, run.sandbox)
         await run.sandbox.terminate.aio()
