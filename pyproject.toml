@@ -9,8 +9,12 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "anyio>=4.14.1",
+    "cyclopts>=4.19.0",
+    "fastapi>=0.138.1",
+    "fastmcp>=3.4.2",
     "modal>=1.5.1",
     "pydantic>=2.13.4",
+    "uvicorn>=0.49.0",
 ]
 
 [project.scripts]
@@ -50,7 +54,7 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["modal_compose"]
-omit = ["*/examples.py"]
+omit = ["*/examples.py", "*/templates/*"]
 
 [tool.coverage.report]
 show_missing = true
@@ -64,6 +68,7 @@ exclude_lines = [
 
 [tool.pyright]
 include = ["src"]
+exclude = ["src/modal_compose/templates"]
 typeCheckingMode = "strict"
 pythonVersion = "3.12"
 reportMissingTypeStubs = false

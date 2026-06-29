@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from modal import Image, Sandbox
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from .layer import LayerContext
 
 
 class Remote(BaseModel):
@@ -10,7 +15,7 @@ class Remote(BaseModel):
     def provision(self, image: Image) -> Image:
         raise NotImplementedError
 
-    async def refresh(self, sandbox: Sandbox) -> None:
+    async def sync(self, sandbox: Sandbox, ctx: "LayerContext") -> None:
         raise NotImplementedError
 
 
@@ -24,5 +29,5 @@ class GitHubRemote(Remote):
             f"git clone --branch {self.ref} {url} {self.working_directory}"
         )
 
-    async def refresh(self, sandbox: Sandbox) -> None:
+    async def sync(self, sandbox: Sandbox, ctx: "LayerContext") -> None:
         await sandbox.exec.aio("git", "-C", self.working_directory, "pull", "--ff-only")

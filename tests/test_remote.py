@@ -5,7 +5,7 @@ from typing import Callable
 
 import pytest
 
-from modal_compose.layer import Layer
+from modal_compose.layer import Layer, LayerContext
 from modal_compose.remote import GitHubRemote
 
 from .conftest import FakeImage
@@ -44,27 +44,25 @@ class TestGitHubRemote:
             ("run_commands", ("git clone --branch dev https://github.com/ramp/web.git /w",))
         ]
 
-    def test_refresh_pulls_in_working_directory(self) -> None:
+    def test_sync_pulls_in_working_directory(self) -> None:
         sandbox = FakeSandbox()
+        ctx = LayerContext(name="web", working_directory="/workspace/web")
         asyncio.run(
-            GitHubRemote(repo="ramp/web", working_directory="/workspace/web").refresh(sandbox)
+            GitHubRemote(repo="ramp/web", working_directory="/workspace/web").sync(sandbox, ctx)
         )
         assert sandbox.calls == [("git", "-C", "/workspace/web", "pull", "--ff-only")]
 
 
-class TestExplicitWiring:
-    def test_user_attaches_provision_and_refresh_themselves(
+class TestLayerSource:
+    def test_attaching_a_source_clones_on_apply(
         self, fake_image: Callable[[], FakeImage]
     ) -> None:
-        web = Layer(name="web")
         source = GitHubRemote(repo="ramp/web", working_directory="/workspace/web")
-
-        web.build(source.provision)
-        web.on_start(source.refresh)
+        web = Layer(name="web", source=source)
 
         image = fake_image()
         web.apply(image)
         assert image.calls == [
             ("run_commands", ("git clone --branch main https://github.com/ramp/web.git /workspace/web",))
         ]
-        assert web.runtime.starts == [source.refresh]
+        assert web.source is source
