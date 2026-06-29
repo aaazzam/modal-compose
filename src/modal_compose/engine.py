@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 from uuid import uuid4
 
+import anyio
 from modal import App, Sandbox, Secret
 
 from .layer import Repo
@@ -43,6 +44,7 @@ class Engine:
     app: App
     name: str
     base_image: "Image"
+    timeout: int = 3600
 
     def image(self) -> "Image":
         return self.repo.get_image(self.base_image)
@@ -65,11 +67,17 @@ class Engine:
             image=self.image(),
             encrypted_ports=self.repo.ports,
             secrets=self._secrets(),
+            timeout=self.timeout,
             tags={"box": self.name, "run": run_id},
         )
-        run = Run(run_id=run_id, sandbox=sandbox)
-        await run_hooks(self.repo.starts, sandbox)
-        return run
+        try:
+            await sandbox.wait_until_ready.aio()
+            await run_hooks(self.repo.starts, sandbox)
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await sandbox.terminate.aio()
+            raise
+        return Run(run_id=run_id, sandbox=sandbox)
 
     async def terminate(self, run: Run) -> None:
         await run_hooks(self.repo.terminates, run.sandbox)
