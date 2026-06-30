@@ -24,12 +24,21 @@ def scaffolded(tmp_path: Path):
 
 
 class TestScaffoldedServer:
-    def test_registry_mounts_the_example_api(self, scaffolded: Path) -> None:
+    def test_registry_mounts_the_example_repo(self, scaffolded: Path) -> None:
         registry = importlib.import_module("devbox.registry").registry
-        assert registry.names() == ("api",)
+        assert registry.names() == ("modal",)
+
+    def test_added_repo_mounts_and_imports(self, scaffolded: Path) -> None:
+        from modal_compose.cli import add
+
+        add("octocat/widget", directory=scaffolded)
+        importlib.invalidate_caches()
+        registry = importlib.import_module("devbox.registry").registry
+        assert set(registry.names()) == {"modal", "widget"}
+        assert registry["widget"].sources[0].repo == "octocat/widget"
 
     def test_server_exposes_lifecycle_tools(self, scaffolded: Path) -> None:
-        mcp = importlib.import_module("devbox.server").mcp
+        mcp = importlib.import_module("devbox.services").mcp
 
         async def names() -> set[str]:
             return {tool.name for tool in await mcp.list_tools()}
@@ -37,7 +46,7 @@ class TestScaffoldedServer:
         assert {"create_sandbox", "kill_sandbox"} <= asyncio.run(names())
 
     def test_server_exposes_the_file_and_shell_tools(self, scaffolded: Path) -> None:
-        mcp = importlib.import_module("devbox.server").mcp
+        mcp = importlib.import_module("devbox.services").mcp
 
         async def names() -> set[str]:
             return {tool.name for tool in await mcp.list_tools()}
@@ -47,10 +56,10 @@ class TestScaffoldedServer:
     def test_create_sandbox_repo_is_generated_from_the_registry(
         self, scaffolded: Path
     ) -> None:
-        mcp = importlib.import_module("devbox.server").mcp
+        mcp = importlib.import_module("devbox.services").mcp
 
         async def schema() -> dict[str, object]:
             tool = await mcp.get_tool("create_sandbox")
             return tool.parameters["properties"]["repo"]
 
-        assert asyncio.run(schema())["enum"] == ["api"]
+        assert asyncio.run(schema())["enum"] == ["modal"]

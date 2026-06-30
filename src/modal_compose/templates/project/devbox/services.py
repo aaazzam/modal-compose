@@ -1,29 +1,45 @@
-"""Modal app that prebakes a named image per registered repo on a cron.
+"""The dev-box service: the MCP server plus the image-prebake cron, one Modal app.
 
-Deploy with `modal deploy -m devbox.services`. Every half hour each repo in
-the registry is built and published under a Modal named image keyed by its
-registry name, so the MCP server's `create_sandbox` can launch from a warm
-image instead of building on the request path.
+`create_server` (from `modal_compose`) assembles the MCP server — it
+auto-discovers the file and shell tools and wires the `create_sandbox` /
+`kill_sandbox` lifecycle tools against your registry. `serve` exposes it over
+HTTP, `build_one` builds and publishes one repo's named image, and `build` fans
+`build_one` out over the registry on a cron (each build an isolated, retried
+Modal invocation).
+
+Deploy with `python -m devbox.services` (or `modal deploy -m devbox.services`).
 """
 
 from __future__ import annotations
 
 import modal
 
+from modal_compose import create_server
+
 from .registry import registry
 
-build_image = (
-    modal.Image.debian_slim()
-    .pip_install("fastapi", "uvicorn", "pydantic")
-    .add_local_python_source("devbox", "modal_compose")
-)
-
-app = modal.App("modal-compose-build", image=build_image, create_if_missing=True)
+app = modal.App("modal-compose")
+image = modal.Image.debian_slim().uv_sync().add_local_python_source("devbox")
+mcp = create_server(registry)
 
 
-@app.function(schedule=modal.Cron("*/30 * * * *"), timeout=30 * 60)
-def build_images() -> None:
-    for name, repo in registry.items():
-        image = repo.get_image(registry.base_image)
-        built = image.build(app)
-        built.publish(name)
+@app.function(image=image)
+@modal.asgi_app()
+def serve() -> object:
+    return mcp.http_app(stateless_http=True)
+
+
+@app.function(image=image, retries=3, timeout=30 * 60)
+def build_one(name: str) -> None:
+    build_app = modal.App.lookup(app.name, create_if_missing=True)
+    built = registry[name].get_image(registry.base_image).build(build_app)
+    built.publish(name)
+
+
+@app.function(image=image, schedule=modal.Cron("*/30 * * * *"), timeout=60 * 60)
+def build() -> None:
+    list(build_one.map(registry.names(), return_exceptions=True))
+
+
+if __name__ == "__main__":
+    app.deploy()

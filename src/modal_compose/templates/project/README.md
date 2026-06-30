@@ -8,15 +8,19 @@ is the code built on them.
 ## Layout
 
 - `pyproject.toml` — the project's dependencies. `devbox/` is importable from
-  this directory, so `python -m devbox.server` and `modal deploy` work here.
+  this directory, so `python -m devbox.services` and `modal deploy` work here.
 - `devbox/registry.py` — the source of truth. Mount one `Repo` per service,
   the way a parent FastAPI app mounts sub-apps.
-- `devbox/api.py` — a hello-world FastAPI service and the `Repo` that builds
-  and runs it. Mounted into the registry as `api`. Replace it with your own.
-- `devbox/services.py` — a Modal app whose cron prebakes a named image per
-  registered repo. Tune the schedule and build logic to taste.
-- `devbox/server.py` — the MCP server, with the `create_sandbox` /
-  `kill_sandbox` tools spelled out so you can add or change them.
+- `devbox/repos/` — one module per dev-box you can launch. `repos/modal.py` is
+  the example `Repo`: a layer whose `source` is a `GitHubRemote` that clones
+  `modal-labs/modal-client` into the image and `git pull`s it on start. Mounted
+  into the registry as `modal`. Add your own modules alongside it.
+- `devbox/services.py` — the one Modal `app`. It calls `create_server(registry)`
+  from `modal_compose` (the file/shell tools plus the `create_sandbox` /
+  `kill_sandbox` lifecycle tools) and registers three functions: `serve` (the
+  MCP web server), `build_one` (builds and publishes one repo's named image,
+  with per-repo retries/timeout), and `build` (the cron that fans `build_one`
+  out over the registry with `Function.map`). Running it deploys the app.
 
 ## Use
 
@@ -26,31 +30,22 @@ Install dependencies:
 uv sync
 ```
 
-Add a service by defining a `Repo` and mounting it in `devbox/registry.py`:
+Add a service by defining a `Repo` in `devbox/repos/` and mounting it in
+`devbox/registry.py`:
 
 ```python
-from . import worker
+from .repos import worker
 
 registry.mount("worker", worker.repo)
 ```
 
-Prebake images on a schedule:
+Deploy the app to Modal (the HTTP MCP server plus the prebake cron):
 
 ```
-uv run modal deploy -m devbox.services
+uv run python -m devbox.services
 ```
 
-Run the MCP server locally over stdio:
-
-```
-uv run python -m devbox.server
-```
-
-Or deploy it to Modal as an HTTP service:
-
-```
-uv run modal deploy -m devbox.server
-```
+or equivalently `uv run modal deploy -m devbox.services`.
 
 `create_sandbox(repo=...)` only accepts repos you mounted — the choices are
 generated from the registry and baked into the tool's JSON schema as an `enum`.

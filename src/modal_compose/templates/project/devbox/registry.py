@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from modal_compose.registry import Registry
 
-from . import api
+from .repos import modal
 
 registry = Registry()
-registry.mount("api", api.repo)
+registry.mount("modal", modal.repo)
