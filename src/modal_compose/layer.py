@@ -12,11 +12,7 @@ from .remote import Remote
 class LayerContext(BaseModel):
     name: str
     working_directory: str | None = None
-
-
-ImageTransform = Callable[[Image, LayerContext], Image]
-SandboxLifecycleHook = Callable[[Sandbox, LayerContext], Any]
-LifecycleBinding = tuple[SandboxLifecycleHook, LayerContext]
+    source: Remote
 
 
 class Runtime(BaseModel):
@@ -25,52 +21,74 @@ class Runtime(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     secrets: set[Secret] = Field(default_factory=set)
     ports: list[int] = Field(default_factory=list)
-    starts: list[SandboxLifecycleHook] = Field(default_factory=list, max_length=1)
-    terminates: list[SandboxLifecycleHook] = Field(default_factory=list, max_length=1)
+    starts: list[Callable[[Sandbox, LayerContext], Any]] = Field(
+        default_factory=list, max_length=1
+    )
+    terminates: list[Callable[[Sandbox, LayerContext], Any]] = Field(
+        default_factory=list, max_length=1
+    )
 
 
 class Layer(BaseModel, arbitrary_types_allowed=True):
     name: str
-    source: Remote | None = None
-    builds: list[ImageTransform] = Field(default_factory=list, max_length=1)
+    source: Remote
+    builds: list[Callable[[Image, LayerContext], Image]] = Field(
+        default_factory=list, max_length=1
+    )
     runtime: Runtime = Field(default_factory=Runtime)
 
     @property
-    def working_directory(self) -> str | None:
-        return None if self.source is None else self.source.working_directory
+    def working_directory(self) -> str:
+        return self.source.working_directory
 
     @property
     def context(self) -> LayerContext:
-        return LayerContext(name=self.name, working_directory=self.working_directory)
+        return LayerContext(
+            name=self.name,
+            working_directory=self.working_directory,
+            source=self.source,
+        )
 
-    def build(self, fn: ImageTransform) -> ImageTransform:
+    def build(
+        self, fn: Callable[[Image, LayerContext], Image]
+    ) -> Callable[[Image, LayerContext], Image]:
         self.builds.append(fn)
         return fn
 
-    def on_start(self, fn: SandboxLifecycleHook) -> SandboxLifecycleHook:
+    def on_start(
+        self, fn: Callable[[Sandbox, LayerContext], Any]
+    ) -> Callable[[Sandbox, LayerContext], Any]:
         self.runtime.starts.append(fn)
         return fn
 
-    def on_terminate(self, fn: SandboxLifecycleHook) -> SandboxLifecycleHook:
+    def on_terminate(
+        self, fn: Callable[[Sandbox, LayerContext], Any]
+    ) -> Callable[[Sandbox, LayerContext], Any]:
         self.runtime.terminates.append(fn)
         return fn
 
-    def apply(self, image: "Image") -> "Image":
-        seeded = image if self.source is None else self.source.provision(image)
+    def apply(self, image: Image) -> Image:
+        seeded = self.source.provision(image)
         ctx = self.context
-        return reduce(lambda current, transform: transform(current, ctx), self.builds, seeded)
+        return reduce(
+            lambda current, transform: transform(current, ctx), self.builds, seeded
+        )
 
     @property
-    def start_bindings(self) -> list[LifecycleBinding]:
+    def start_bindings(
+        self,
+    ) -> list[tuple[Callable[[Sandbox, LayerContext], Any], LayerContext]]:
         ctx = self.context
-        bindings: list[LifecycleBinding] = []
-        if self.source is not None:
-            bindings.append((self.source.sync, ctx))
+        bindings: list[tuple[Callable[[Sandbox, LayerContext], Any], LayerContext]] = [
+            (self.source.sync, ctx)
+        ]
         bindings.extend((hook, ctx) for hook in self.runtime.starts)
         return bindings
 
     @property
-    def terminate_bindings(self) -> list[LifecycleBinding]:
+    def terminate_bindings(
+        self,
+    ) -> list[tuple[Callable[[Sandbox, LayerContext], Any], LayerContext]]:
         ctx = self.context
         return [(hook, ctx) for hook in self.runtime.terminates]
 
@@ -87,14 +105,11 @@ class Repo(BaseModel, arbitrary_types_allowed=True):
 
     @property
     def sources(self) -> list[Remote]:
-        return [layer.source for layer in self.layers if layer.source is not None]
+        return [layer.source for layer in self.layers]
 
     @property
-    def working_directory(self) -> str | None:
-        for layer in self.layers:
-            if layer.working_directory is not None:
-                return layer.working_directory
-        return None
+    def working_directory(self) -> str:
+        return self.layers[0].working_directory
 
     @property
     def env(self) -> dict[str, str]:
@@ -121,9 +136,15 @@ class Repo(BaseModel, arbitrary_types_allowed=True):
         )
 
     @property
-    def start_bindings(self) -> list[LifecycleBinding]:
+    def start_bindings(
+        self,
+    ) -> list[tuple[Callable[[Sandbox, LayerContext], Any], LayerContext]]:
         return [binding for layer in self.layers for binding in layer.start_bindings]
 
     @property
-    def terminate_bindings(self) -> list[LifecycleBinding]:
-        return [binding for layer in self.layers for binding in layer.terminate_bindings]
+    def terminate_bindings(
+        self,
+    ) -> list[tuple[Callable[[Sandbox, LayerContext], Any], LayerContext]]:
+        return [
+            binding for layer in self.layers for binding in layer.terminate_bindings
+        ]

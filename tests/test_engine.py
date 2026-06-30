@@ -12,9 +12,9 @@ from modal_compose.engine import Engine, run_hooks
 from modal_compose.layer import Layer, LayerContext, Repo, Runtime
 from modal_compose.remote import Remote
 
-from .conftest import FakeImage
+from .conftest import FakeImage, StubRemote
 
-CTX = LayerContext(name="t")
+CTX = LayerContext(name="t", source=StubRemote(working_directory="/t"))
 
 pytestmark = pytest.mark.unit
 
@@ -74,7 +74,11 @@ class TestRunHooks:
         def hook(box: object, ctx: LayerContext) -> None:
             seen.append(ctx)
 
-        ctx = LayerContext(name="web", working_directory="/workspace/web")
+        ctx = LayerContext(
+            name="web",
+            working_directory="/workspace/web",
+            source=StubRemote(working_directory="/workspace/web"),
+        )
         asyncio.run(run_hooks([(hook, ctx)], object()))
         assert seen == [ctx]
 
@@ -101,7 +105,11 @@ class TestCreate:
         monkeypatch.setattr(engine, "Sandbox", factory)
 
         seen: list[object] = []
-        web = Layer(name="web", runtime=Runtime(ports=[8000]))
+        web = Layer(
+            name="web",
+            source=StubRemote(working_directory="/workspace/web"),
+            runtime=Runtime(ports=[8000]),
+        )
 
         @web.on_start
         def _(box: object, ctx: LayerContext) -> None:
@@ -138,7 +146,9 @@ class TestCreate:
             async def sync(self, box: object, ctx: LayerContext) -> None:
                 events.append("sync")
 
-        web = Layer(name="web", source=RecordingRemote(working_directory="/workspace/web"))
+        web = Layer(
+            name="web", source=RecordingRemote(working_directory="/workspace/web")
+        )
 
         @web.on_start
         def _(box: object, ctx: LayerContext) -> None:
@@ -158,7 +168,7 @@ class TestCreate:
         sandbox = FakeSandbox()
         monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
 
-        web = Layer(name="web")
+        web = Layer(name="web", source=StubRemote(working_directory="/workspace/web"))
 
         @web.on_start
         def _(box: object, ctx: LayerContext) -> None:
@@ -179,7 +189,11 @@ class TestSecrets:
     ) -> None:
         common = Secret.from_dict({"COMMON": "1"})
         repo_secret = Secret.from_dict({"REPO": "2"})
-        web = Layer(name="web", runtime=Runtime(secrets={repo_secret}))
+        web = Layer(
+            name="web",
+            source=StubRemote(working_directory="/workspace/web"),
+            runtime=Runtime(secrets={repo_secret}),
+        )
 
         eng = Engine(
             repo=Repo(layers=[web]),
@@ -195,7 +209,11 @@ class TestSecrets:
         self, fake_image: Callable[[], FakeImage]
     ) -> None:
         shared = Secret.from_dict({"SHARED": "1"})
-        web = Layer(name="web", runtime=Runtime(secrets={shared}))
+        web = Layer(
+            name="web",
+            source=StubRemote(working_directory="/workspace/web"),
+            runtime=Runtime(secrets={shared}),
+        )
 
         eng = Engine(
             repo=Repo(layers=[web]),
@@ -217,7 +235,11 @@ class TestSecrets:
 
         common = Secret.from_dict({"COMMON": "1"})
         repo_secret = Secret.from_dict({"REPO": "2"})
-        web = Layer(name="web", runtime=Runtime(secrets={repo_secret}))
+        web = Layer(
+            name="web",
+            source=StubRemote(working_directory="/workspace/web"),
+            runtime=Runtime(secrets={repo_secret}),
+        )
 
         eng = Engine(
             repo=Repo(layers=[web]),

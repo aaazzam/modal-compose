@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Callable
 
 import pytest
+from modal import Image, Sandbox
+
+from modal_compose.layer import LayerContext
+from modal_compose.remote import Remote
 
 
 class FakeImage:
@@ -24,6 +28,14 @@ class FakeImage:
 
     def uv_pip_install(self, *args: str) -> "FakeImage":
         return self._record("uv_pip_install", args)
+
+
+class StubRemote(Remote):
+    def provision(self, image: Image) -> Image:
+        return image
+
+    async def sync(self, sandbox: Sandbox, ctx: LayerContext) -> None:
+        return None
 
 
 @pytest.fixture

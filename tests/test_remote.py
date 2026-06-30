@@ -8,7 +8,7 @@ import pytest
 from modal_compose.layer import Layer, LayerContext
 from modal_compose.remote import GitHubRemote
 
-from .conftest import FakeImage
+from .conftest import FakeImage, StubRemote
 
 pytestmark = pytest.mark.unit
 
@@ -32,23 +32,41 @@ class TestGitHubRemote:
         self, fake_image: Callable[[], FakeImage]
     ) -> None:
         image = fake_image()
-        GitHubRemote(repo="ramp/web", working_directory="/workspace/web").provision(image)
+        GitHubRemote(repo="ramp/web", working_directory="/workspace/web").provision(
+            image
+        )
         assert image.calls == [
-            ("run_commands", ("git clone --branch main https://github.com/ramp/web.git /workspace/web",))
+            (
+                "run_commands",
+                (
+                    "git clone --branch main https://github.com/ramp/web.git /workspace/web",
+                ),
+            )
         ]
 
     def test_provision_respects_ref(self, fake_image: Callable[[], FakeImage]) -> None:
         image = fake_image()
-        GitHubRemote(repo="ramp/web", working_directory="/w", ref="dev").provision(image)
+        GitHubRemote(repo="ramp/web", working_directory="/w", ref="dev").provision(
+            image
+        )
         assert image.calls == [
-            ("run_commands", ("git clone --branch dev https://github.com/ramp/web.git /w",))
+            (
+                "run_commands",
+                ("git clone --branch dev https://github.com/ramp/web.git /w",),
+            )
         ]
 
     def test_sync_pulls_in_working_directory(self) -> None:
         sandbox = FakeSandbox()
-        ctx = LayerContext(name="web", working_directory="/workspace/web")
+        ctx = LayerContext(
+            name="web",
+            working_directory="/workspace/web",
+            source=StubRemote(working_directory="/workspace/web"),
+        )
         asyncio.run(
-            GitHubRemote(repo="ramp/web", working_directory="/workspace/web").sync(sandbox, ctx)
+            GitHubRemote(repo="ramp/web", working_directory="/workspace/web").sync(
+                sandbox, ctx
+            )
         )
         assert sandbox.calls == [("git", "-C", "/workspace/web", "pull", "--ff-only")]
 
@@ -63,6 +81,11 @@ class TestLayerSource:
         image = fake_image()
         web.apply(image)
         assert image.calls == [
-            ("run_commands", ("git clone --branch main https://github.com/ramp/web.git /workspace/web",))
+            (
+                "run_commands",
+                (
+                    "git clone --branch main https://github.com/ramp/web.git /workspace/web",
+                ),
+            )
         ]
         assert web.source is source

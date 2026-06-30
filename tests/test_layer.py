@@ -9,14 +9,20 @@ from pydantic import ValidationError
 from modal_compose.layer import Layer, LayerContext, Repo, Runtime
 from modal_compose.remote import GitHubRemote
 
-from .conftest import FakeImage
+from .conftest import FakeImage, StubRemote
 
 pytestmark = pytest.mark.unit
 
 
+def _stub(name: str, working_directory: str = "/w", **kwargs: object) -> Layer:
+    return Layer(
+        name=name, source=StubRemote(working_directory=working_directory), **kwargs
+    )
+
+
 class TestLayerBuild:
     def test_build_registers_and_returns_the_function(self) -> None:
-        ui = Layer(name="ui")
+        ui = _stub("ui")
 
         @ui.build
         def transform(image: FakeImage, ctx: LayerContext) -> FakeImage:
@@ -27,7 +33,7 @@ class TestLayerBuild:
     def test_apply_runs_the_build_transform(
         self, fake_image: Callable[[], FakeImage]
     ) -> None:
-        ui = Layer(name="ui")
+        ui = _stub("ui")
 
         @ui.build
         def _(image: FakeImage, ctx: LayerContext) -> FakeImage:
@@ -37,11 +43,11 @@ class TestLayerBuild:
         assert ui.apply(image) is image
         assert image.calls == [("apt_install", ("nodejs",))]
 
-    def test_layer_without_builds_is_identity(
+    def test_layer_without_builds_just_provisions_the_source(
         self, fake_image: Callable[[], FakeImage]
     ) -> None:
         image = fake_image()
-        assert Layer(name="x").apply(image) is image
+        assert _stub("x").apply(image) is image
         assert image.calls == []
 
 
@@ -58,7 +64,12 @@ class TestLayerSource:
         image = fake_image()
         web.apply(image)
         assert image.calls == [
-            ("run_commands", ("git clone --branch main https://github.com/ramp/web.git /workspace/web",)),
+            (
+                "run_commands",
+                (
+                    "git clone --branch main https://github.com/ramp/web.git /workspace/web",
+                ),
+            ),
             ("pip_install", ("uv",)),
         ]
 
@@ -85,15 +96,12 @@ class TestLayerSource:
         )
         assert web.working_directory == "/workspace/web"
         assert web.context.working_directory == "/workspace/web"
-
-    def test_sourceless_layer_has_no_working_directory(self) -> None:
-        assert Layer(name="x").working_directory is None
-        assert Layer(name="x").context.working_directory is None
+        assert web.context.source is web.source
 
 
 class TestLayerLifecycle:
     def test_on_start_and_on_terminate_register_on_runtime(self) -> None:
-        x = Layer(name="x")
+        x = _stub("x")
 
         @x.on_start
         def start(box: object, ctx: LayerContext) -> None: ...
@@ -111,58 +119,68 @@ class TestRepoImage:
     ) -> None:
         base = fake_image()
 
-        first = Layer(name="first")
+        first = _stub("first")
         first.build(lambda image, ctx: image.apt_install("first"))
-        second = Layer(name="second")
+        second = _stub("second")
         second.build(lambda image, ctx: image.run_commands("second"))
 
         repo = Repo(layers=[first, second])
 
         assert repo.get_image(base) is base
-        assert base.calls == [("apt_install", ("first",)), ("run_commands", ("second",))]
+        assert base.calls == [
+            ("apt_install", ("first",)),
+            ("run_commands", ("second",)),
+        ]
 
     def test_empty_layers_is_rejected(self) -> None:
         with pytest.raises(ValidationError):
             Repo(layers=[])
 
+    def test_a_layer_requires_a_source(self) -> None:
+        with pytest.raises(ValidationError):
+            Layer(name="x")
+
 
 class TestRepoSources:
-    def test_sources_collect_sourced_layers_in_order(self) -> None:
-        web = Layer(name="web", source=GitHubRemote(repo="ramp/web", working_directory="/w"))
-        plain = Layer(name="tooling")
-        api = Layer(name="api", source=GitHubRemote(repo="ramp/api", working_directory="/a"))
-        assert [s.working_directory for s in Repo(layers=[web, plain, api]).sources] == ["/w", "/a"]
+    def test_sources_collect_every_layer_in_order(self) -> None:
+        web = Layer(
+            name="web", source=GitHubRemote(repo="ramp/web", working_directory="/w")
+        )
+        api = Layer(
+            name="api", source=GitHubRemote(repo="ramp/api", working_directory="/a")
+        )
+        assert [s.working_directory for s in Repo(layers=[web, api]).sources] == [
+            "/w",
+            "/a",
+        ]
 
-    def test_working_directory_is_the_first_sourced_layers(self) -> None:
-        plain = Layer(name="tooling")
-        api = Layer(name="api", source=GitHubRemote(repo="ramp/api", working_directory="/a"))
-        assert Repo(layers=[plain, api]).working_directory == "/a"
-
-    def test_working_directory_is_none_without_any_source(self) -> None:
-        assert Repo(layers=[Layer(name="x")]).working_directory is None
+    def test_working_directory_is_the_first_layers(self) -> None:
+        first = _stub("first", working_directory="/first")
+        second = _stub("second", working_directory="/second")
+        assert Repo(layers=[first, second]).working_directory == "/first"
 
 
 class TestRepoRuntime:
     def test_env_merges_with_later_layers_winning(self) -> None:
-        a = Layer(name="a", runtime=Runtime(env={"K": "old", "A": "1"}))
-        b = Layer(name="b", runtime=Runtime(env={"K": "new", "B": "2"}))
+        a = _stub("a", runtime=Runtime(env={"K": "old", "A": "1"}))
+        b = _stub("b", runtime=Runtime(env={"K": "new", "B": "2"}))
         assert Repo(layers=[a, b]).env == {"K": "new", "A": "1", "B": "2"}
 
     def test_secrets_union_across_layers(self) -> None:
         s1 = Secret.from_dict({"A": "1"})
         s2 = Secret.from_dict({"B": "2"})
-        a = Layer(name="a", runtime=Runtime(secrets={s1}))
-        b = Layer(name="b", runtime=Runtime(secrets={s2}))
+        a = _stub("a", runtime=Runtime(secrets={s1}))
+        b = _stub("b", runtime=Runtime(secrets={s2}))
         assert Repo(layers=[a, b]).secrets == {s1, s2}
 
     def test_ports_concatenate_across_layers(self) -> None:
-        a = Layer(name="a", runtime=Runtime(ports=[8000]))
-        b = Layer(name="b", runtime=Runtime(ports=[5173]))
+        a = _stub("a", runtime=Runtime(ports=[8000]))
+        b = _stub("b", runtime=Runtime(ports=[5173]))
         assert Repo(layers=[a, b]).ports == [8000, 5173]
 
     def test_start_bindings_lead_with_source_sync_then_user_hooks(self) -> None:
         a = Layer(name="a", source=GitHubRemote(repo="r/a", working_directory="/a"))
-        b = Layer(name="b")
+        b = Layer(name="b", source=GitHubRemote(repo="r/b", working_directory="/b"))
 
         @a.on_start
         def start_a(box: object, ctx: LayerContext) -> None: ...
@@ -171,5 +189,15 @@ class TestRepoRuntime:
         def start_b(box: object, ctx: LayerContext) -> None: ...
 
         bindings = Repo(layers=[a, b]).start_bindings
-        assert [hook for hook, _ in bindings] == [a.source.sync, start_a, start_b]
-        assert [ctx.working_directory for _, ctx in bindings] == ["/a", "/a", None]
+        assert [hook for hook, _ in bindings] == [
+            a.source.sync,
+            start_a,
+            b.source.sync,
+            start_b,
+        ]
+        assert [ctx.working_directory for _, ctx in bindings] == [
+            "/a",
+            "/a",
+            "/b",
+            "/b",
+        ]

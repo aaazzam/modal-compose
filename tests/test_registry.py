@@ -9,13 +9,15 @@ from modal import Secret
 from modal_compose.layer import Layer, Repo
 from modal_compose.registry import Registry
 
-from .conftest import FakeImage
+from .conftest import FakeImage, StubRemote
 
 pytestmark = pytest.mark.unit
 
 
 def _repo(name: str) -> Repo:
-    return Repo(layers=[Layer(name=name)])
+    return Repo(
+        layers=[Layer(name=name, source=StubRemote(working_directory=f"/{name}"))]
+    )
 
 
 class TestCommonSecrets:
@@ -59,7 +61,7 @@ class TestImageFor:
     ) -> None:
         base = fake_image()
         registry = Registry(base_image=base)
-        layer = Layer(name="api")
+        layer = Layer(name="api", source=StubRemote(working_directory="/api"))
         layer.build(lambda image, ctx: image.pip_install("fastapi"))
         registry.mount("api", Repo(layers=[layer]))
         assert registry.image_for("api") is base

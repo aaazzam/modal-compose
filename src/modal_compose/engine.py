@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 from uuid import uuid4
 
 import anyio
 from modal import App, Sandbox, Secret
 
-from .layer import LifecycleBinding, Repo
+from .layer import LayerContext, Repo
 
 if TYPE_CHECKING:
     from modal import Image
@@ -19,7 +19,10 @@ async def _maybe_await(result: Any) -> None:
         await result
 
 
-async def run_hooks(bindings: Iterable[LifecycleBinding], sandbox: "Sandbox") -> None:
+async def run_hooks(
+    bindings: Iterable[tuple[Callable[[Sandbox, LayerContext], Any], LayerContext]],
+    sandbox: "Sandbox",
+) -> None:
     for hook, ctx in bindings:
         await _maybe_await(hook(sandbox, ctx))
 
