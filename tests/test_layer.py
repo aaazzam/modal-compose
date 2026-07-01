@@ -57,7 +57,7 @@ class TestLayerSource:
     ) -> None:
         web = Layer(
             name="web",
-            source=GitHubRemote(repo="ramp/web", working_directory="/workspace/web"),
+            source=GitHubRemote(repo="acme/web", working_directory="/workspace/web"),
         )
         web.build(lambda image, ctx: image.pip_install("uv"))
 
@@ -67,7 +67,7 @@ class TestLayerSource:
             (
                 "run_commands",
                 (
-                    "git clone --branch main https://github.com/ramp/web.git /workspace/web",
+                    "git clone --branch main https://github.com/acme/web.git /workspace/web",
                 ),
             ),
             ("pip_install", ("uv",)),
@@ -78,7 +78,7 @@ class TestLayerSource:
     ) -> None:
         web = Layer(
             name="web",
-            source=GitHubRemote(repo="ramp/web", working_directory="/workspace/web"),
+            source=GitHubRemote(repo="acme/web", working_directory="/workspace/web"),
         )
 
         @web.build
@@ -92,7 +92,7 @@ class TestLayerSource:
     def test_working_directory_delegates_to_the_source(self) -> None:
         web = Layer(
             name="web",
-            source=GitHubRemote(repo="ramp/web", working_directory="/workspace/web"),
+            source=GitHubRemote(repo="acme/web", working_directory="/workspace/web"),
         )
         assert web.working_directory == "/workspace/web"
         assert web.context.working_directory == "/workspace/web"
@@ -144,10 +144,10 @@ class TestRepoImage:
 class TestRepoSources:
     def test_sources_collect_every_layer_in_order(self) -> None:
         web = Layer(
-            name="web", source=GitHubRemote(repo="ramp/web", working_directory="/w")
+            name="web", source=GitHubRemote(repo="acme/web", working_directory="/w")
         )
         api = Layer(
-            name="api", source=GitHubRemote(repo="ramp/api", working_directory="/a")
+            name="api", source=GitHubRemote(repo="acme/api", working_directory="/a")
         )
         assert [s.working_directory for s in Repo(layers=[web, api]).sources] == [
             "/w",
@@ -201,3 +201,17 @@ class TestRepoRuntime:
             "/b",
             "/b",
         ]
+
+
+class TestRepoSidecars:
+    def test_sidecars_skips_sources_without_one(self) -> None:
+        a = _stub("a")
+        assert Repo(layers=[a]).sidecars == []
+
+    def test_sidecars_collects_each_layer_with_one(self) -> None:
+        a = Layer(name="a", source=GitHubRemote(repo="acme/a", working_directory="/a"))
+        b = _stub("b")
+        c = Layer(name="c", source=GitHubRemote(repo="acme/c", working_directory="/c"))
+
+        sidecars = Repo(layers=[a, b, c]).sidecars
+        assert [s.env["GITHUB_APP_ACCOUNT"] for s in sidecars] == ["acme", "acme"]

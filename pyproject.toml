@@ -9,11 +9,14 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "anyio>=4.14.1",
+    "cryptography>=43.0.0",
     "cyclopts>=4.19.0",
     "fastapi>=0.138.1",
     "fastmcp>=3.4.2",
     "modal>=1.5.1",
     "pydantic>=2.13.4",
+    "pyjwt>=2.9.0",
+    "requests>=2.32.0",
     "uvicorn>=0.49.0",
 ]
 

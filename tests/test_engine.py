@@ -10,7 +10,7 @@ from modal import Secret
 from modal_compose import engine
 from modal_compose.engine import Engine, run_hooks
 from modal_compose.layer import Layer, LayerContext, Repo, Runtime
-from modal_compose.remote import Remote
+from modal_compose.remote import Remote, SidecarSpec
 
 from .conftest import FakeImage, StubRemote
 
@@ -251,3 +251,90 @@ class TestSecrets:
         asyncio.run(eng.create())
 
         assert set(factory.created_kwargs["secrets"]) == {common, repo_secret}
+
+
+class FakeSidecarImage:
+    def __init__(self, events: list[str], built: object = "built-image") -> None:
+        self._events = events
+        self._built = built
+        self.build = _Aio(self._build)
+
+    def _build(self, **kwargs: object) -> object:
+        self._events.append("build")
+        return self._built
+
+
+class FakeSidecarManager:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+        self.created: list[dict[str, object]] = []
+        self.create = _Aio(self._create)
+
+    def _create(self, *args: object, **kwargs: object) -> object:
+        self._events.append("create")
+        self.created.append({"args": args, **kwargs})
+        return object()
+
+
+class TestSidecars:
+    def test_create_never_touches_sidecars_when_source_has_none(
+        self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
+    ) -> None:
+        sandbox = FakeSandbox()
+        monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
+
+        web = Layer(name="web", source=StubRemote(working_directory="/w"))
+        eng = Engine(
+            repo=Repo(layers=[web]), app=object(), name="web", base_image=fake_image()
+        )
+        asyncio.run(eng.create())
+
+        assert not hasattr(sandbox, "_experimental_sidecars")
+
+    def test_create_builds_and_creates_sidecars_before_start_hooks(
+        self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
+    ) -> None:
+        sandbox = FakeSandbox()
+        monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
+
+        events: list[str] = []
+        sandbox._experimental_sidecars = FakeSidecarManager(events)
+
+        spec = SidecarSpec.model_construct(
+            name="gh-vault",
+            image=FakeSidecarImage(events),
+            command=["uvicorn", "app:app"],
+            env={"GITHUB_APP_ACCOUNT": "acme"},
+            secrets=set(),
+        )
+
+        class SidecarRemote(Remote):
+            def provision(self, image: object) -> object:
+                return image
+
+            async def sync(self, box: object, ctx: LayerContext) -> None:
+                events.append("sync")
+
+            def sidecar(self) -> SidecarSpec | None:
+                return spec
+
+        web = Layer(name="web", source=SidecarRemote(working_directory="/w"))
+
+        @web.on_start
+        def _(box: object, ctx: LayerContext) -> None:
+            events.append("start")
+
+        eng = Engine(
+            repo=Repo(layers=[web]), app=object(), name="web", base_image=fake_image()
+        )
+        asyncio.run(eng.create())
+
+        assert events == ["build", "create", "sync", "start"]
+        [created] = sandbox._experimental_sidecars.created
+        assert created == {
+            "args": ("uvicorn", "app:app"),
+            "name": "gh-vault",
+            "image": "built-image",
+            "env": {"GITHUB_APP_ACCOUNT": "acme"},
+            "secrets": [],
+        }

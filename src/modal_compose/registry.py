@@ -7,6 +7,12 @@ from modal import Image, Secret
 from .layer import Repo
 
 
+def default_base_image() -> Image:
+    return Image.debian_slim().apt_install(
+        "git", "ripgrep", "curl", "ca-certificates", "jq"
+    )
+
+
 class Registry:
     def __init__(
         self,
@@ -15,7 +21,7 @@ class Registry:
     ) -> None:
         self._repos: dict[str, Repo] = {}
         self.base_image: Image = (
-            base_image if base_image is not None else Image.debian_slim().apt_install("git", "ripgrep")
+            base_image if base_image is not None else default_base_image()
         )
         self.common_secrets: set[Secret] = (
             set() if common_secrets is None else set(common_secrets)

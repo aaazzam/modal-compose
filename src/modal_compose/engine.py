@@ -79,12 +79,24 @@ class Engine:
             tags={"box": self.name, "run": run_id},
         )
         try:
+            await self._create_sidecars(sandbox)
             await run_hooks(self.repo.start_bindings, sandbox)
         except BaseException:
             with anyio.CancelScope(shield=True):
                 await sandbox.terminate.aio()
             raise
         return Run(run_id=run_id, sandbox=sandbox)
+
+    async def _create_sidecars(self, sandbox: Sandbox) -> None:
+        for spec in self.repo.sidecars:
+            built = await spec.image.build.aio(app=self.app)
+            await sandbox._experimental_sidecars.create.aio(
+                *spec.command,
+                name=spec.name,
+                image=built,
+                env=spec.env,
+                secrets=list(spec.secrets),
+            )
 
     async def terminate(self, run: Run) -> None:
         await run_hooks(self.repo.terminate_bindings, run.sandbox)

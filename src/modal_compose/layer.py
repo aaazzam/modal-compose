@@ -6,7 +6,7 @@ from typing import Any, Callable
 from modal import Image, Sandbox, Secret
 from pydantic import BaseModel, ConfigDict, Field
 
-from .remote import Remote
+from .remote import Remote, SidecarSpec
 
 
 class LayerContext(BaseModel):
@@ -75,6 +75,10 @@ class Layer(BaseModel, arbitrary_types_allowed=True):
         )
 
     @property
+    def sidecar(self) -> SidecarSpec | None:
+        return self.source.sidecar()
+
+    @property
     def start_bindings(
         self,
     ) -> list[tuple[Callable[[Sandbox, LayerContext], Any], LayerContext]]:
@@ -134,6 +138,11 @@ class Repo(BaseModel, arbitrary_types_allowed=True):
             self.layers,
             list[int](),
         )
+
+    @property
+    def sidecars(self) -> list[SidecarSpec]:
+        candidates = (layer.sidecar for layer in self.layers)
+        return [spec for spec in candidates if spec is not None]
 
     @property
     def start_bindings(
