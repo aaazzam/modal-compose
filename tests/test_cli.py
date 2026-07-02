@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from modal_compose.cli import add, init
+from modal_compose.cli import add, init, list_boxes
 
 pytestmark = pytest.mark.unit
 
@@ -81,3 +81,9 @@ class TestAdd:
         init(tmp_path)
         with pytest.raises(SystemExit, match="owner/name"):
             add("not-a-repo", directory=tmp_path)
+
+
+class TestListBoxes:
+    def test_requires_an_initialized_project(self, tmp_path: Path) -> None:
+        with pytest.raises(SystemExit, match="modal-compose init"):
+            list_boxes(directory=tmp_path)

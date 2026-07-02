@@ -2,9 +2,10 @@ from typing import Annotated
 
 from fastmcp.tools import tool
 from mcp.types import ToolAnnotations
+from modal.file_io import FileIO
 from pydantic import Field
 
-from modal_compose.toolbox import load_tool_description, require_absolute_path, sandbox_session
+from modal_compose.toolbox import load_tool_description, require_absolute_path, resolve_sandbox
 
 DESCRIPTION = load_tool_description(__file__)
 
@@ -31,7 +32,8 @@ def write(
 ) -> str:
     file_path = require_absolute_path(file_path)
 
-    with sandbox_session(sandbox_id) as sb:
-        with sb.open(file_path, "w") as f:
-            f.write(content)
-        return f"File written successfully to {file_path}"
+    sb = resolve_sandbox(sandbox_id)
+    f: FileIO[str] = sb.open(file_path, "w")
+    with f:
+        f.write(content)
+    return f"File written successfully to {file_path}"

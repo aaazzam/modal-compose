@@ -6,7 +6,7 @@ from fastmcp.tools import tool
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from modal_compose.toolbox import load_tool_description, run_command, sandbox_session
+from modal_compose.toolbox import load_tool_description, resolve_sandbox, run_command
 
 DESCRIPTION = load_tool_description(__file__)
 
@@ -48,15 +48,15 @@ def bash(
         ),
     ] = None,
 ) -> str:
-    with sandbox_session(sandbox_id) as sb:
-        if workdir:
-            command = f"cd {quote(workdir)} && {command}"
+    sb = resolve_sandbox(sandbox_id)
+    if workdir:
+        command = f"cd {quote(workdir)} && {command}"
 
-        result = run_command(
-            sb,
-            "bash",
-            "-c",
-            command,
-            timeout=_timeout_seconds(timeout),
-        )
-        return result.shell_output()
+    result = run_command(
+        sb,
+        "bash",
+        "-c",
+        command,
+        timeout=_timeout_seconds(timeout),
+    )
+    return result.shell_output()

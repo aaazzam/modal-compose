@@ -5,6 +5,7 @@ from typing import Callable
 
 import pytest
 from modal import Image, Sandbox
+from pydantic import ValidationError
 
 from modal_compose import Layer
 
@@ -79,3 +80,14 @@ class TestLayerSubclass:
         second = Postgres()
         first.ports.append(5433)
         assert second.ports == [5432]
+
+    def test_rejects_unknown_fields(self) -> None:
+        with pytest.raises(ValidationError, match="prots"):
+            Layer(prots=[5432])
+
+    def test_rejects_unknown_fields_on_subclasses(self) -> None:
+        class Postgres(Layer):
+            version: str = "16"
+
+        with pytest.raises(ValidationError, match="verison"):
+            Postgres(verison="17")

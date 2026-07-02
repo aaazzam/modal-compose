@@ -42,6 +42,10 @@ class TestRepoField:
         with pytest.raises(ValidationError, match="owner/name"):
             GitHub(repo="not-a-repo")
 
+    def test_rejects_a_typoed_field(self) -> None:
+        with pytest.raises(ValidationError, match="branch"):
+            GitHub(repo="acme/web", branch="dev")
+
     def test_normalize_repo_rejects_extra_segments(self) -> None:
         with pytest.raises(ValueError, match="owner/name"):
             normalize_repo("a/b/c")

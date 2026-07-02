@@ -17,7 +17,9 @@ def scaffolded(tmp_path: Path):
     init(tmp_path)
     sys.path.insert(0, str(tmp_path))
     yield tmp_path
-    sys.path.remove(str(tmp_path))
+    for entry in (str(tmp_path), str(tmp_path.resolve())):
+        while entry in sys.path:
+            sys.path.remove(entry)
     for name in list(sys.modules):
         if name == "devbox" or name.startswith("devbox."):
             del sys.modules[name]
@@ -26,7 +28,7 @@ def scaffolded(tmp_path: Path):
 class TestScaffoldedServer:
     def test_registry_registers_the_example_box(self, scaffolded: Path) -> None:
         registry = importlib.import_module("devbox.registry").registry
-        assert registry.names() == ("modal",)
+        assert tuple(registry) == ("modal",)
 
     def test_added_box_registers_and_imports(self, scaffolded: Path) -> None:
         from modal_compose.cli import add
@@ -34,7 +36,7 @@ class TestScaffoldedServer:
         add("octocat/widget", directory=scaffolded)
         importlib.invalidate_caches()
         registry = importlib.import_module("devbox.registry").registry
-        assert set(registry.names()) == {"modal", "widget"}
+        assert set(registry) == {"modal", "widget"}
         assert registry["widget"].layers[0].repo == "octocat/widget"
 
     def test_server_exposes_lifecycle_tools(self, scaffolded: Path) -> None:
@@ -63,3 +65,13 @@ class TestScaffoldedServer:
             return tool.parameters["properties"]["box"]
 
         assert asyncio.run(schema())["enum"] == ["modal"]
+
+    def test_list_prints_the_registry(
+        self, scaffolded: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from modal_compose.cli import list_boxes
+
+        list_boxes(directory=scaffolded)
+        out = capsys.readouterr().out
+        assert "modal-compose" in out
+        assert "GitHub(modal-labs/modal-client@main)" in out

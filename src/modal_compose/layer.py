@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Awaitable
 
 from modal import Image, Sandbox, Secret
 from pydantic import BaseModel, ConfigDict
@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 class SidecarSpec(BaseModel):
     """A companion container that runs alongside the sandbox on its private network."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
     name: str
     image: Image
@@ -30,10 +30,12 @@ class Layer(BaseModel):
     a companion container to launch next to the sandbox.
 
     Subclass `Layer` to make a reusable layer; the base implementations all do
-    nothing, so override only the moments you need.
+    nothing, so override only the moments you need. Unknown fields are
+    rejected, so a typo in a layer's configuration fails loudly at
+    construction time.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
     workdir: str | None = None
     env: dict[str, str] = {}
@@ -44,11 +46,11 @@ class Layer(BaseModel):
         """Transform the image during the build; the default is a no-op."""
         return image
 
-    def on_start(self, sandbox: Sandbox) -> Any:
+    def on_start(self, sandbox: Sandbox) -> Awaitable[None] | None:
         """Run after the sandbox starts; may be overridden sync or async."""
         return None
 
-    def on_terminate(self, sandbox: Sandbox) -> Any:
+    def on_terminate(self, sandbox: Sandbox) -> Awaitable[None] | None:
         """Run before the sandbox is terminated; may be overridden sync or async."""
         return None
 

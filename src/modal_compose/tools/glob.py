@@ -4,7 +4,7 @@ from fastmcp.tools import tool
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from modal_compose.toolbox import load_tool_description, run_command, sandbox_session
+from modal_compose.toolbox import load_tool_description, resolve_sandbox, run_command
 
 DESCRIPTION = load_tool_description(__file__)
 
@@ -32,10 +32,10 @@ def glob(
         ),
     ] = None,
 ) -> str:
-    with sandbox_session(sandbox_id) as sb:
-        root = path or "."
-        args = ["rg", "--files", "--glob", pattern, root]
-        result = run_command(sb, *args)
-        if not result.ok:
-            return result.stderr.strip() or "(glob failed)"
-        return result.stdout.strip() or "No files found"
+    sb = resolve_sandbox(sandbox_id)
+    root = path or "."
+    args = ["rg", "--files", "--glob", pattern, root]
+    result = run_command(sb, *args)
+    if not result.ok:
+        return result.stderr.strip() or "(glob failed)"
+    return result.stdout.strip() or "No files found"

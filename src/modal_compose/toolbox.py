@@ -7,8 +7,6 @@ republish dance: the run is long-lived, not reclaimed between calls.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -75,12 +73,6 @@ def validate_line_window(
 def resolve_sandbox(sandbox_id: str) -> modal.Sandbox:
     """Resolve a running sandbox by the id `create_sandbox` returned."""
     return modal.Sandbox.from_id(sandbox_id)
-
-
-@contextmanager
-def sandbox_session(sandbox_id: str) -> Iterator[modal.Sandbox]:
-    """Yield the live sandbox addressed by `sandbox_id`."""
-    yield resolve_sandbox(sandbox_id)
 
 
 def run_command(

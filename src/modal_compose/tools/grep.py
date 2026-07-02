@@ -4,7 +4,7 @@ from fastmcp.tools import tool
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from modal_compose.toolbox import load_tool_description, run_command, sandbox_session
+from modal_compose.toolbox import load_tool_description, resolve_sandbox, run_command
 
 DESCRIPTION = load_tool_description(__file__)
 
@@ -40,17 +40,17 @@ def grep(
     if not pattern:
         raise ValueError("pattern is required")
 
-    with sandbox_session(sandbox_id) as sb:
-        root = path or "."
-        args = ["rg", "--color=never", "--no-heading", "--line-number"]
-        if include:
-            args += ["--glob", include]
-        args.append(pattern)
-        args.append(root)
+    sb = resolve_sandbox(sandbox_id)
+    root = path or "."
+    args = ["rg", "--color=never", "--no-heading", "--line-number"]
+    if include:
+        args += ["--glob", include]
+    args.append(pattern)
+    args.append(root)
 
-        result = run_command(sb, *args)
-        if result.returncode not in (0, 1):
-            return result.stderr.strip() or f"(grep failed, exit {result.returncode})"
-        if not result.stdout.strip():
-            return "No matches found"
-        return result.stdout.strip()
+    result = run_command(sb, *args)
+    if result.returncode not in (0, 1):
+        return result.stderr.strip() or f"(grep failed, exit {result.returncode})"
+    if not result.stdout.strip():
+        return "No matches found"
+    return result.stdout.strip()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from shlex import quote
-from typing import Any, cast
 
 from modal import Image, Sandbox, Secret
 from pydantic import model_validator
@@ -26,6 +25,11 @@ def normalize_repo(repo: str) -> str:
     return f"{owner}/{name}"
 
 
+def default_workdir(repo: str) -> str:
+    """The default checkout path for a normalized `owner/name` repo."""
+    return f"/workspace/{repo.split('/', 1)[1]}"
+
+
 class GitHub(Layer):
     """A layer that clones a GitHub repo at build time and `git pull`s it on start.
 
@@ -40,23 +44,16 @@ class GitHub(Layer):
     ref: str = "main"
     private: bool = False
 
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        values = cast(dict[str, Any], data)
-        repo = values.get("repo")
-        if isinstance(repo, str):
-            normalized = normalize_repo(repo)
-            values["repo"] = normalized
-            if not values.get("workdir"):
-                values["workdir"] = f"/workspace/{normalized.split('/', 1)[1]}"
-        return values
+    @model_validator(mode="after")
+    def _normalize(self) -> "GitHub":
+        self.repo = normalize_repo(self.repo)
+        if self.workdir is None:
+            self.workdir = default_workdir(self.repo)
+        return self
 
     @property
     def _checkout(self) -> str:
-        return self.workdir or f"/workspace/{self.repo.split('/', 1)[1]}"
+        return self.workdir or default_workdir(self.repo)
 
     def build(self, image: Image) -> Image:
         url = f"https://github.com/{self.repo}.git"

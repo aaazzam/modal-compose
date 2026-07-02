@@ -1,16 +1,31 @@
 from __future__ import annotations
 
+import importlib
 import re
 import shutil
+import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from types import ModuleType
 
 import cyclopts
 
-from .github import normalize_repo
+from .github import GitHub, normalize_repo
+from .layer import Layer
+from .registry import Registry
+
+
+def _version() -> str:
+    try:
+        return version("modal-compose")
+    except PackageNotFoundError:
+        return "0.0.0"
+
 
 app = cyclopts.App(
     name="modal-compose",
     help="Scaffold and run a declarative Modal dev-box.",
+    version=_version(),
 )
 
 TEMPLATES = Path(__file__).parent / "templates" / "project"
@@ -66,6 +81,31 @@ def _register_in_registry(registry_file: Path, name: str) -> None:
     registry_file.write_text(text, encoding="utf-8")
 
 
+def _load_project_module(directory: Path, module: str) -> ModuleType:
+    target = directory.resolve()
+    if not (target / "devbox").is_dir():
+        raise SystemExit(
+            f"no dev-box project in {target}; run `modal-compose init` first"
+        )
+    if str(target) not in sys.path:
+        sys.path.insert(0, str(target))
+    return importlib.import_module(module)
+
+
+def _load_registry(directory: Path) -> Registry:
+    module = _load_project_module(directory, "devbox.registry")
+    registry = getattr(module, "registry", None)
+    if not isinstance(registry, Registry):
+        raise SystemExit("devbox/registry.py does not define `registry = Registry(...)`")
+    return registry
+
+
+def _describe_layer(layer: Layer) -> str:
+    if isinstance(layer, GitHub):
+        return f"GitHub({layer.repo}@{layer.ref})"
+    return type(layer).__name__.lstrip("_")
+
+
 @app.command
 def init(directory: Path = Path("."), *, force: bool = False) -> None:
     """Scaffold a runnable dev-box project into DIRECTORY (defaults to the cwd)."""
@@ -109,6 +149,70 @@ def add(
     print(f"added {full!r} as {module!r}")
     print(f"  devbox/repos/{module}.py")
     print("  registered in devbox/registry.py")
+
+
+@app.command(name="list")
+def list_boxes(*, directory: Path = Path(".")) -> None:
+    """List the dev-boxes registered in DIRECTORY's project."""
+    registry = _load_registry(directory)
+    if not registry:
+        print("no dev-boxes registered")
+        return
+    print(f"registry {registry.name!r} ({len(registry)} dev-box(es))")
+    for name, box in registry.items():
+        layers = ", ".join(_describe_layer(layer) for layer in box.layers)
+        print(f"  {name}  layers=[{layers}]  workdir={box.workdir or '-'}")
+
+
+@app.command
+def dev(
+    *,
+    directory: Path = Path("."),
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> None:
+    """Run the project's MCP server locally over HTTP for development."""
+    services = _load_project_module(directory, "devbox.services")
+    mcp = getattr(services, "mcp", None)
+    if mcp is None:
+        raise SystemExit("devbox/services.py does not define `mcp`")
+    mcp.run(transport="http", host=host, port=port)
+
+
+@app.command
+def build(
+    names: list[str] | None = None,
+    *,
+    directory: Path = Path("."),
+) -> None:
+    """Build and publish prebaked images for NAMES (defaults to every dev-box)."""
+    import modal
+
+    registry = _load_registry(directory)
+    targets = names or list(registry)
+    unknown = sorted(set(targets) - set(registry))
+    if unknown:
+        known = ", ".join(registry) or "none"
+        raise SystemExit(
+            f"unknown dev-box(es): {', '.join(unknown)} (registered: {known})"
+        )
+    build_app = modal.App.lookup(registry.name, create_if_missing=True)
+    for name in targets:
+        image_name = registry.image_name_for(name)
+        print(f"building {name!r} -> {image_name!r}")
+        built = registry.image_for(name).build(build_app)
+        built.publish(image_name)
+        print(f"  published {image_name!r}")
+
+
+@app.command
+def deploy(*, directory: Path = Path(".")) -> None:
+    """Deploy the project's Modal app (the MCP server plus the prebake cron)."""
+    services = _load_project_module(directory, "devbox.services")
+    modal_app = getattr(services, "app", None)
+    if modal_app is None:
+        raise SystemExit("devbox/services.py does not define a Modal `app`")
+    modal_app.deploy()
 
 
 def main() -> None:

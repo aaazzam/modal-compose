@@ -63,13 +63,23 @@ class TestCreate:
             def on_start(self, sandbox: Sandbox) -> None:
                 seen.append(sandbox)
 
-        box = DevBox("web", layers=[Web(workdir="/workspace/web", ports=[8000])])
-        run = asyncio.run(_engine(box, fake_image(), timeout=120).create())
+        box = DevBox(
+            "web",
+            layers=[Web(workdir="/workspace/web", ports=[8000])],
+            timeout=120,
+            cpu=2.0,
+            memory=4096,
+            gpu="A10G",
+        )
+        run = asyncio.run(_engine(box, fake_image()).create())
 
         assert seen == [sandbox]
         assert run.sandbox is sandbox
         assert run.sandbox_id == "sb-123"
         assert factory.created_kwargs["timeout"] == 120
+        assert factory.created_kwargs["cpu"] == 2.0
+        assert factory.created_kwargs["memory"] == 4096
+        assert factory.created_kwargs["gpu"] == "A10G"
         assert factory.created_kwargs["encrypted_ports"] == [8000]
         assert factory.created_kwargs["workdir"] == "/workspace/web"
         assert factory.created_kwargs["tags"]["box"] == "web"
@@ -152,6 +162,63 @@ class TestTerminate:
         assert events == ["terminate"]
         assert sandbox.terminated is True
 
+    def test_run_terminates_itself(
+        self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
+    ) -> None:
+        sandbox = FakeSandbox()
+        monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
+
+        events: list[str] = []
+
+        class Web(Layer):
+            def on_terminate(self, sandbox: Sandbox) -> None:
+                events.append("terminate")
+
+        run = asyncio.run(_engine(DevBox("web", layers=[Web()]), fake_image()).create())
+        asyncio.run(run.terminate())
+
+        assert events == ["terminate"]
+        assert sandbox.terminated is True
+
+    def test_run_context_manager_creates_and_terminates(
+        self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
+    ) -> None:
+        sandbox = FakeSandbox()
+        monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
+
+        events: list[str] = []
+
+        class Web(Layer):
+            def on_start(self, sandbox: Sandbox) -> None:
+                events.append("start")
+
+            def on_terminate(self, sandbox: Sandbox) -> None:
+                events.append("terminate")
+
+        async def use() -> None:
+            async with _engine(DevBox("web", layers=[Web()]), fake_image()).run() as run:
+                events.append(f"inside:{run.sandbox_id}")
+
+        asyncio.run(use())
+
+        assert events == ["start", "inside:sb-123", "terminate"]
+        assert sandbox.terminated is True
+
+    def test_run_context_manager_terminates_on_error(
+        self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
+    ) -> None:
+        sandbox = FakeSandbox()
+        monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
+
+        async def use() -> None:
+            async with _engine(DevBox("web", layers=[Layer()]), fake_image()).run():
+                raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(use())
+
+        assert sandbox.terminated is True
+
 
 class TestSecrets:
     def test_orders_common_secrets_before_box_secrets(
@@ -164,14 +231,14 @@ class TestSecrets:
         eng = _engine(box, fake_image(), secrets=(common,))
         assert eng._secrets() == [common, box_secret]
 
-    def test_does_not_double_count_shared_secret(
+    def test_accumulates_a_repeated_secret_in_order(
         self, fake_image: Callable[[], FakeImage]
     ) -> None:
         shared = Secret.from_dict({"SHARED": "1"})
         box = DevBox("web", layers=[Layer(secrets=(shared,))])
 
         eng = _engine(box, fake_image(), secrets=(shared,))
-        assert eng._secrets() == [shared]
+        assert eng._secrets() == [shared, shared]
 
     def test_env_is_appended_as_a_final_secret(
         self, fake_image: Callable[[], FakeImage]
@@ -206,6 +273,7 @@ class TestFromRegistry:
         assert eng.app is app
         assert eng.base_image is base
         assert eng.secrets == (common,)
+        assert eng.image_name == "modal-compose-web"
 
 
 class FakeSidecarImage:

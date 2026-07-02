@@ -2,13 +2,14 @@ from typing import Annotated
 
 from fastmcp.tools import tool
 from mcp.types import ToolAnnotations
+from modal.file_io import FileIO
 from pydantic import Field
 
 from modal_compose.toolbox import (
     READ_MAX_LINE_LENGTH,
     load_tool_description,
     require_absolute_path,
-    sandbox_session,
+    resolve_sandbox,
     validate_line_window,
 )
 
@@ -38,16 +39,17 @@ def read(
     file_path = require_absolute_path(file_path)
     start, count = validate_line_window(offset=offset, limit=limit)
 
-    with sandbox_session(sandbox_id) as sb:
-        with sb.open(file_path, "r") as f:
-            content = f.read()
+    sb = resolve_sandbox(sandbox_id)
+    f: FileIO[str] = sb.open(file_path, "r")
+    with f:
+        content = f.read()
 
-        lines = content.splitlines()
-        selected = lines[start : start + count]
+    lines = content.splitlines()
+    selected = lines[start : start + count]
 
-        rendered = []
-        for i, line in enumerate(selected, start=start + 1):
-            if len(line) > READ_MAX_LINE_LENGTH:
-                line = line[:READ_MAX_LINE_LENGTH]
-            rendered.append(f"{i:>6}\t{line}")
-        return "\n".join(rendered)
+    rendered: list[str] = []
+    for i, line in enumerate(selected, start=start + 1):
+        if len(line) > READ_MAX_LINE_LENGTH:
+            line = line[:READ_MAX_LINE_LENGTH]
+        rendered.append(f"{i:>6}\t{line}")
+    return "\n".join(rendered)

@@ -39,13 +39,22 @@ from .repos import worker
 registry.add(worker.box)
 ```
 
+Run the MCP server locally while you iterate:
+
+```
+uv run modal-compose dev
+```
+
 Deploy the app to Modal (the HTTP MCP server plus the prebake cron):
 
 ```
-uv run python -m devbox.services
+uv run modal-compose deploy
 ```
 
-or equivalently `uv run modal deploy -m devbox.services`.
+or equivalently `uv run python -m devbox.services` or
+`uv run modal deploy -m devbox.services`. `modal-compose list` shows what is
+registered and `modal-compose build [name...]` prebakes images on demand
+instead of waiting for the cron.
 
 `create_sandbox(box=...)` only accepts dev-boxes you registered — the choices
 are generated from the registry and baked into the tool's JSON schema as an

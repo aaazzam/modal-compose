@@ -21,6 +21,31 @@ class TestConstruction:
         box = DevBox("api", layers=[Layer()])
         assert box.name == "api"
 
+    def test_rejects_an_empty_name(self) -> None:
+        with pytest.raises(ValueError, match="DevBox name"):
+            DevBox("", layers=[Layer()])
+
+    def test_rejects_a_name_with_invalid_characters(self) -> None:
+        with pytest.raises(ValueError, match="DevBox name"):
+            DevBox("my box", layers=[Layer()])
+
+    def test_rejects_a_non_positive_timeout(self) -> None:
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            DevBox("api", layers=[Layer()], timeout=0)
+
+    def test_defaults_the_sandbox_resources(self) -> None:
+        box = DevBox("api", layers=[Layer()])
+        assert box.timeout == 3600
+        assert box.cpu is None
+        assert box.memory is None
+        assert box.gpu is None
+
+    def test_carries_the_sandbox_resources(self) -> None:
+        box = DevBox(
+            "api", layers=[Layer()], timeout=120, cpu=2.0, memory=4096, gpu="A10G"
+        )
+        assert (box.timeout, box.cpu, box.memory, box.gpu) == (120, 2.0, 4096, "A10G")
+
 
 class TestImage:
     def test_folds_layers_over_the_base_in_declaration_order(
@@ -87,11 +112,12 @@ class TestRuntimeSurface:
         box = DevBox("api", layers=[Layer(ports=[8000]), Layer(ports=[5173])])
         assert box.ports == [8000, 5173]
 
-    def test_secrets_accumulate_in_order_and_dedupe_by_identity(self) -> None:
+    def test_secrets_accumulate_in_declaration_order(self) -> None:
         s1 = Secret.from_dict({"A": "1"})
         s2 = Secret.from_dict({"B": "2"})
-        box = DevBox("api", layers=[Layer(secrets=(s1, s2)), Layer(secrets=(s1,))])
-        assert box.secrets == (s1, s2)
+        s3 = Secret.from_dict({"C": "3"})
+        box = DevBox("api", layers=[Layer(secrets=(s1, s2)), Layer(secrets=(s3,))])
+        assert box.secrets == (s1, s2, s3)
 
     def test_box_level_settings_become_a_trailing_layer(self) -> None:
         box = DevBox(

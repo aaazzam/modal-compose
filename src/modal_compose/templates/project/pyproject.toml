@@ -4,10 +4,8 @@ version = "0.1.0"
 description = "A declarative Modal dev-box."
 requires-python = ">=3.12"
 dependencies = [
+    "modal",
     "modal-compose",
-    "fastmcp>=3",
-    "fastapi",
-    "uvicorn",
 ]
 
 [tool.uv]
