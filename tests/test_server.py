@@ -5,11 +5,9 @@ from typing import Any
 
 import pytest
 
-from modal_compose import create_server
-from modal_compose.layer import Layer, Repo
-from modal_compose.registry import Registry
+from modal_compose import DevBox, Layer, Registry, create_server
 
-from .conftest import FakeImage, StubRemote
+from .conftest import FakeImage
 
 pytestmark = pytest.mark.unit
 
@@ -17,8 +15,7 @@ pytestmark = pytest.mark.unit
 def _registry(*names: str) -> Registry:
     registry = Registry(base_image=FakeImage())
     for name in names:
-        source = StubRemote(working_directory=f"/{name}")
-        registry.mount(name, Repo(layers=[Layer(name=name, source=source)]))
+        registry.add(DevBox(name, layers=[Layer(workdir=f"/{name}")]))
     return registry
 
 
@@ -35,8 +32,8 @@ class TestCreateServer:
     def test_create_sandbox_enum_comes_from_the_registry(self) -> None:
         mcp = create_server(_registry("alpha", "beta"))
 
-        async def repo_schema() -> dict[str, Any]:
+        async def box_schema() -> dict[str, Any]:
             tool = await mcp.get_tool("create_sandbox")
-            return tool.parameters["properties"]["repo"]
+            return tool.parameters["properties"]["box"]
 
-        assert asyncio.run(repo_schema())["enum"] == ["alpha", "beta"]
+        assert asyncio.run(box_schema())["enum"] == ["alpha", "beta"]

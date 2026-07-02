@@ -1,5 +1,6 @@
-"""Repo definitions: one module per dev-box you can launch.
+"""Dev-box definitions: one module per dev-box you can launch.
 
-Each module here defines a `repo` (a `Repo`) that `registry.py` mounts under a
-name. Add your own alongside `modal.py` and mount them in the registry.
+Each module here defines a `box` (a `DevBox`) that `registry.py` registers
+under its name. Add your own alongside `modal.py` and register them with
+`registry.add`.
 """

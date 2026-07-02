@@ -3,10 +3,6 @@ from __future__ import annotations
 from typing import Callable
 
 import pytest
-from modal import Image, Sandbox
-
-from modal_compose.layer import LayerContext
-from modal_compose.remote import Remote
 
 
 class FakeImage:
@@ -33,14 +29,6 @@ class FakeImage:
 
     def add_local_python_source(self, *args: str, copy: bool = False) -> "FakeImage":
         return self._record("add_local_python_source", args)
-
-
-class StubRemote(Remote):
-    def provision(self, image: Image) -> Image:
-        return image
-
-    async def sync(self, sandbox: Sandbox, ctx: LayerContext) -> None:
-        return None
 
 
 @pytest.fixture

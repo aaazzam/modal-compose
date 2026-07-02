@@ -42,17 +42,17 @@ class TestInit:
 
 
 class TestAdd:
-    def test_scaffolds_a_repo_module_and_mounts_it(self, tmp_path: Path) -> None:
+    def test_scaffolds_a_box_module_and_registers_it(self, tmp_path: Path) -> None:
         init(tmp_path)
         add("octocat/widget", directory=tmp_path)
 
         module = (tmp_path / "devbox" / "repos" / "widget.py").read_text()
         assert 'repo="octocat/widget"' in module
-        assert 'working_directory="/workspace/widget"' in module
+        assert 'DevBox("widget"' in module
 
         registry = (tmp_path / "devbox" / "registry.py").read_text()
         assert "from .repos import widget" in registry
-        assert 'registry.mount("widget", widget.repo)' in registry
+        assert "registry.add(widget.box)" in registry
         assert "from .repos import modal" in registry
 
     def test_normalizes_a_github_url(self, tmp_path: Path) -> None:

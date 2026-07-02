@@ -6,6 +6,8 @@ from pathlib import Path
 
 import cyclopts
 
+from .github import normalize_repo
+
 app = cyclopts.App(
     name="modal-compose",
     help="Scaffold and run a declarative Modal dev-box.",
@@ -13,39 +15,26 @@ app = cyclopts.App(
 
 TEMPLATES = Path(__file__).parent / "templates" / "project"
 
-_REPO_MODULE = '''"""Dev-box for {repo}: clones it into a sandbox to hack on.
+_BOX_MODULE = '''"""Dev-box for {repo}: clones it into a sandbox to hack on.
 
-The layer's `source` clones the repo at build time and `git pull`s it on start.
-Add build steps (install dependencies, run codegen) and lifecycle hooks the way
-`repos/modal.py` does.
+The `GitHub` layer clones the repo at build time and `git pull`s it on start
+(its `workdir` defaults to /workspace/<name>). Stack more layers or add a
+`build=` step the way `repos/modal.py` does.
 """
 
 from __future__ import annotations
 
-from modal_compose.layer import Layer, Repo
-from modal_compose.remote import GitHubRemote
+from modal_compose import DevBox, GitHub
 
-layer = Layer(
-    name="{name}",
-    source=GitHubRemote(
-        repo="{repo}", ref="{ref}", working_directory="{working_directory}"
-    ),
-)
-
-repo = Repo(layers=[layer])
+box = DevBox("{name}", layers=[GitHub(repo="{repo}", ref="{ref}")])
 '''
 
 
 def _normalize_repo(repo: str) -> str:
-    text = repo.strip().removesuffix(".git")
-    for prefix in ("https://github.com/", "http://github.com/", "git@github.com:"):
-        if text.startswith(prefix):
-            text = text[len(prefix) :]
-            break
-    owner, _, name = text.strip("/").partition("/")
-    if not owner or not name or "/" in name:
-        raise SystemExit(f"expected a GitHub repo like 'owner/name', got {repo!r}")
-    return f"{owner}/{name}"
+    try:
+        return normalize_repo(repo)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
 
 
 def _module_name(repo: str, name: str | None) -> str:
@@ -56,7 +45,7 @@ def _module_name(repo: str, name: str | None) -> str:
     return slug
 
 
-def _mount_in_registry(registry_file: Path, name: str) -> None:
+def _register_in_registry(registry_file: Path, name: str) -> None:
     lines = registry_file.read_text(encoding="utf-8").splitlines()
     import_line = f"from .repos import {name}"
     if import_line not in lines:
@@ -71,9 +60,9 @@ def _mount_in_registry(registry_file: Path, name: str) -> None:
                     break
         lines.insert(len(lines) if index is None else index, import_line)
     text = "\n".join(lines).rstrip("\n") + "\n"
-    mount_line = f'registry.mount("{name}", {name}.repo)\n'
-    if mount_line not in text:
-        text += mount_line
+    add_line = f"registry.add({name}.box)\n"
+    if add_line not in text:
+        text += add_line
     registry_file.write_text(text, encoding="utf-8")
 
 
@@ -101,7 +90,7 @@ def add(
     directory: Path = Path("."),
     force: bool = False,
 ) -> None:
-    """Scaffold a GitHub repo into devbox/repos/ and mount it in the registry."""
+    """Scaffold a GitHub repo into devbox/repos/ and register it as a dev-box."""
     full = _normalize_repo(repo)
     module = _module_name(full, name)
     target = directory.resolve()
@@ -113,18 +102,13 @@ def add(
     if module_path.exists() and not force:
         raise SystemExit(f"{module_path} already exists; pass --force to overwrite")
     module_path.write_text(
-        _REPO_MODULE.format(
-            repo=full,
-            name=module,
-            ref=ref,
-            working_directory=f"/workspace/{module}",
-        ),
+        _BOX_MODULE.format(repo=full, name=module, ref=ref),
         encoding="utf-8",
     )
-    _mount_in_registry(registry_file, module)
+    _register_in_registry(registry_file, module)
     print(f"added {full!r} as {module!r}")
     print(f"  devbox/repos/{module}.py")
-    print("  mounted in devbox/registry.py")
+    print("  registered in devbox/registry.py")
 
 
 def main() -> None:

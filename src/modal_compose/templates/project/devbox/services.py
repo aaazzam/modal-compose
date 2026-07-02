@@ -3,9 +3,9 @@
 `create_server` (from `modal_compose`) assembles the MCP server — it
 auto-discovers the file and shell tools and wires the `create_sandbox` /
 `kill_sandbox` lifecycle tools against your registry. `serve` exposes it over
-HTTP, `build_one` builds and publishes one repo's named image, and `build` fans
-`build_one` out over the registry on a cron (each build an isolated, retried
-Modal invocation).
+HTTP, `build_one` builds and publishes one dev-box's named image, and `build`
+fans `build_one` out over the registry on a cron (each build an isolated,
+retried Modal invocation).
 
 Deploy with `python -m devbox.services` (or `modal deploy -m devbox.services`).
 """
@@ -32,7 +32,7 @@ def serve() -> object:
 @app.function(image=image, retries=3, timeout=30 * 60)
 def build_one(name: str) -> None:
     build_app = modal.App.lookup(app.name, create_if_missing=True)
-    built = registry[name].get_image(registry.base_image).build(build_app)
+    built = registry.image_for(name).build(build_app)
     built.publish(name)
 
 

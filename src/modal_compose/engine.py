@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Iterable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import anyio
 from modal import App, Sandbox, Secret
 
-from .layer import LayerContext, Repo
+from .devbox import DevBox
 
 if TYPE_CHECKING:
     from modal import Image
+
+    from .registry import Registry
 
 
 async def _maybe_await(result: Any) -> None:
@@ -19,16 +21,10 @@ async def _maybe_await(result: Any) -> None:
         await result
 
 
-async def run_hooks(
-    bindings: Iterable[tuple[Callable[[Sandbox, LayerContext], Any], LayerContext]],
-    sandbox: "Sandbox",
-) -> None:
-    for hook, ctx in bindings:
-        await _maybe_await(hook(sandbox, ctx))
-
-
 @dataclass
 class Run:
+    """A live sandbox created by an `Engine`."""
+
     run_id: str
     sandbox: Sandbox
 
@@ -46,25 +42,45 @@ class Run:
 
 @dataclass
 class Engine:
-    repo: Repo
+    """The single-sandbox lifecycle for one `DevBox`.
+
+    `image()` folds the box's layers over the base image, `build()` builds and
+    publishes it under the box's name, `create()` launches the sandbox (with
+    sidecars, then each layer's `on_start` in declaration order), and
+    `terminate()` runs each layer's `on_terminate` before killing the sandbox.
+    """
+
+    box: DevBox
     app: App
-    name: str
     base_image: "Image"
     timeout: int = 3600
-    secrets: set[Secret] = field(default_factory=set)
+    secrets: tuple[Secret, ...] = ()
+
+    @classmethod
+    def from_registry(cls, registry: "Registry", name: str, app: App) -> "Engine":
+        return cls(
+            box=registry[name],
+            app=app,
+            base_image=registry.base_image,
+            secrets=registry.common_secrets,
+        )
 
     def image(self) -> "Image":
-        return self.repo.get_image(self.base_image)
+        return self.box.image(self.base_image)
 
     async def build(self) -> "Image":
         built = await self.image().build.aio(app=self.app)
-        await built.publish.aio(name=self.name)
+        await built.publish.aio(name=self.box.name)
         return built
 
-    def _secrets(self) -> list[Any]:
-        secrets = list(self.secrets | self.repo.secrets)
-        if self.repo.env:
-            secrets.append(Secret.from_dict(self.repo.env))
+    def _secrets(self) -> list[Secret]:
+        deduped: dict[int, Secret] = {}
+        for secret in (*self.secrets, *self.box.secrets):
+            deduped.setdefault(id(secret), secret)
+        secrets = list(deduped.values())
+        if self.box.env:
+            env: dict[str, str | None] = dict(self.box.env)
+            secrets.append(Secret.from_dict(env))
         return secrets
 
     async def create(self, image: "Image | None" = None) -> Run:
@@ -72,15 +88,16 @@ class Engine:
         sandbox = await Sandbox.create.aio(
             app=self.app,
             image=self.image() if image is None else image,
-            encrypted_ports=self.repo.ports,
+            encrypted_ports=self.box.ports,
             secrets=self._secrets(),
             timeout=self.timeout,
-            workdir=self.repo.working_directory,
-            tags={"box": self.name, "run": run_id},
+            workdir=self.box.workdir,
+            tags={"box": self.box.name, "run": run_id},
         )
         try:
             await self._create_sidecars(sandbox)
-            await run_hooks(self.repo.start_bindings, sandbox)
+            for layer in self.box.layers:
+                await _maybe_await(layer.on_start(sandbox))
         except BaseException:
             with anyio.CancelScope(shield=True):
                 await sandbox.terminate.aio()
@@ -88,7 +105,7 @@ class Engine:
         return Run(run_id=run_id, sandbox=sandbox)
 
     async def _create_sidecars(self, sandbox: Sandbox) -> None:
-        for spec in self.repo.sidecars:
+        for spec in self.box.sidecars:
             built = await spec.image.build.aio(app=self.app)
             await sandbox._experimental_sidecars.create.aio(
                 *spec.command,
@@ -99,5 +116,6 @@ class Engine:
             )
 
     async def terminate(self, run: Run) -> None:
-        await run_hooks(self.repo.terminate_bindings, run.sandbox)
+        for layer in self.box.layers:
+            await _maybe_await(layer.on_terminate(run.sandbox))
         await run.sandbox.terminate.aio()

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import ItemsView, Iterator
+from collections.abc import ItemsView, Iterator, Sequence
 
 from modal import Image, Secret
 
-from .layer import Repo
+from .devbox import DevBox
 
 
 def default_base_image() -> Image:
@@ -14,42 +14,53 @@ def default_base_image() -> Image:
 
 
 class Registry:
+    """The named dev-boxes available to launch, plus what they share.
+
+    `base_image` seeds every box's image build and `common_secrets` are
+    injected into every sandbox. `add(box)` registers a box under its own
+    name; lookup is dict-like (`registry["name"]`, `in`, iteration).
+    """
+
     def __init__(
         self,
         base_image: Image | None = None,
-        common_secrets: set[Secret] | None = None,
+        common_secrets: Sequence[Secret] = (),
     ) -> None:
-        self._repos: dict[str, Repo] = {}
+        self._boxes: dict[str, DevBox] = {}
         self.base_image: Image = (
             base_image if base_image is not None else default_base_image()
         )
-        self.common_secrets: set[Secret] = (
-            set() if common_secrets is None else set(common_secrets)
-        )
+        self.common_secrets: tuple[Secret, ...] = tuple(common_secrets)
 
-    def mount(self, name: str, repo: Repo) -> Repo:
-        if name in self._repos:
-            raise ValueError(f"{name!r} is already mounted")
-        self._repos[name] = repo
-        return repo
+    def add(self, box: DevBox) -> DevBox:
+        if box.name in self._boxes:
+            raise ValueError(f"a dev-box named {box.name!r} is already registered")
+        self._boxes[box.name] = box
+        return box
 
     def names(self) -> tuple[str, ...]:
-        return tuple(self._repos)
+        return tuple(self._boxes)
 
-    def items(self) -> ItemsView[str, Repo]:
-        return self._repos.items()
+    def items(self) -> ItemsView[str, DevBox]:
+        return self._boxes.items()
 
     def image_for(self, name: str) -> Image:
-        return self[name].get_image(self.base_image)
+        return self[name].image(self.base_image)
 
-    def __getitem__(self, name: str) -> Repo:
-        return self._repos[name]
+    def __getitem__(self, name: str) -> DevBox:
+        try:
+            return self._boxes[name]
+        except KeyError:
+            known = ", ".join(self._boxes) or "none"
+            raise KeyError(
+                f"no dev-box named {name!r} is registered (registered: {known})"
+            ) from None
 
     def __contains__(self, name: object) -> bool:
-        return name in self._repos
+        return name in self._boxes
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._repos)
+        return iter(self._boxes)
 
     def __len__(self) -> int:
-        return len(self._repos)
+        return len(self._boxes)

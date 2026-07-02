@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-modal-compose = "modal_compose:main"
+modal-compose = "modal_compose.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/aaazzam/modal-compose"

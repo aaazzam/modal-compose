@@ -5,16 +5,13 @@ from typing import Callable
 
 import pytest
 
-from modal import Secret
+from modal import Sandbox, Secret
 
+from modal_compose import DevBox, Layer, Registry, SidecarSpec
 from modal_compose import engine
-from modal_compose.engine import Engine, run_hooks
-from modal_compose.layer import Layer, LayerContext, Repo, Runtime
-from modal_compose.remote import Remote, SidecarSpec
+from modal_compose.engine import Engine
 
-from .conftest import FakeImage, StubRemote
-
-CTX = LayerContext(name="t", source=StubRemote(working_directory="/t"))
+from .conftest import FakeImage
 
 pytestmark = pytest.mark.unit
 
@@ -30,13 +27,8 @@ class _Aio:
 class FakeSandbox:
     def __init__(self) -> None:
         self.object_id = "sb-123"
-        self.ready = False
         self.terminated = False
-        self.wait_until_ready = _Aio(self._wait)
         self.terminate = _Aio(self._terminate)
-
-    def _wait(self) -> None:
-        self.ready = True
 
     def _terminate(self) -> None:
         self.terminated = True
@@ -53,47 +45,8 @@ class FakeSandboxFactory:
         return self.sandbox
 
 
-class TestRunHooks:
-    def test_runs_sync_and_async_hooks_in_order(self) -> None:
-        calls: list[tuple[str, object]] = []
-
-        def sync_hook(box: object, ctx: LayerContext) -> None:
-            calls.append(("sync", box))
-
-        async def async_hook(box: object, ctx: LayerContext) -> None:
-            calls.append(("async", box))
-
-        sandbox = object()
-        asyncio.run(run_hooks([(sync_hook, CTX), (async_hook, CTX)], sandbox))
-
-        assert calls == [("sync", sandbox), ("async", sandbox)]
-
-    def test_passes_the_layer_context_to_each_hook(self) -> None:
-        seen: list[LayerContext] = []
-
-        def hook(box: object, ctx: LayerContext) -> None:
-            seen.append(ctx)
-
-        ctx = LayerContext(
-            name="web",
-            working_directory="/workspace/web",
-            source=StubRemote(working_directory="/workspace/web"),
-        )
-        asyncio.run(run_hooks([(hook, ctx)], object()))
-        assert seen == [ctx]
-
-    def test_no_hooks_is_a_noop(self) -> None:
-        asyncio.run(run_hooks([], object()))
-
-    def test_awaits_async_hook_side_effects(self) -> None:
-        done: list[bool] = []
-
-        async def hook(box: object, ctx: LayerContext) -> None:
-            await asyncio.sleep(0)
-            done.append(True)
-
-        asyncio.run(run_hooks([(hook, CTX)], object()))
-        assert done == [True]
+def _engine(box: DevBox, base_image: FakeImage, **kwargs: object) -> Engine:
+    return Engine(box=box, app=object(), base_image=base_image, **kwargs)
 
 
 class TestCreate:
@@ -105,62 +58,62 @@ class TestCreate:
         monkeypatch.setattr(engine, "Sandbox", factory)
 
         seen: list[object] = []
-        web = Layer(
-            name="web",
-            source=StubRemote(working_directory="/workspace/web"),
-            runtime=Runtime(ports=[8000]),
-        )
 
-        @web.on_start
-        def _(box: object, ctx: LayerContext) -> None:
-            seen.append(box)
+        class Web(Layer):
+            def on_start(self, sandbox: Sandbox) -> None:
+                seen.append(sandbox)
 
-        eng = Engine(
-            repo=Repo(layers=[web]),
-            app=object(),
-            name="web",
-            base_image=fake_image(),
-            timeout=120,
-        )
-        run = asyncio.run(eng.create())
+        box = DevBox("web", layers=[Web(workdir="/workspace/web", ports=[8000])])
+        run = asyncio.run(_engine(box, fake_image(), timeout=120).create())
 
         assert seen == [sandbox]
         assert run.sandbox is sandbox
+        assert run.sandbox_id == "sb-123"
         assert factory.created_kwargs["timeout"] == 120
         assert factory.created_kwargs["encrypted_ports"] == [8000]
+        assert factory.created_kwargs["workdir"] == "/workspace/web"
         assert factory.created_kwargs["tags"]["box"] == "web"
 
-    def test_source_sync_runs_before_start_hooks_and_sets_workdir(
+    def test_runs_sync_and_async_hooks_in_declaration_order(
         self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
     ) -> None:
         sandbox = FakeSandbox()
-        factory = FakeSandboxFactory(sandbox)
-        monkeypatch.setattr(engine, "Sandbox", factory)
+        monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
 
         events: list[str] = []
 
-        class RecordingRemote(Remote):
-            def provision(self, image: object) -> object:
-                return image
-
-            async def sync(self, box: object, ctx: LayerContext) -> None:
+        class SyncFirst(Layer):
+            def on_start(self, sandbox: Sandbox) -> None:
                 events.append("sync")
 
-        web = Layer(
-            name="web", source=RecordingRemote(working_directory="/workspace/web")
+        class AsyncSecond(Layer):
+            async def on_start(self, sandbox: Sandbox) -> None:
+                await asyncio.sleep(0)
+                events.append("async")
+
+        box = DevBox("web", layers=[SyncFirst(), AsyncSecond()])
+        asyncio.run(_engine(box, fake_image()).create())
+
+        assert events == ["sync", "async"]
+
+    def test_inline_start_hook_runs_after_layer_hooks(
+        self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
+    ) -> None:
+        sandbox = FakeSandbox()
+        monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
+
+        events: list[str] = []
+
+        class Web(Layer):
+            def on_start(self, sandbox: Sandbox) -> None:
+                events.append("layer")
+
+        box = DevBox(
+            "web", layers=[Web()], on_start=lambda sandbox: events.append("inline")
         )
+        asyncio.run(_engine(box, fake_image()).create())
 
-        @web.on_start
-        def _(box: object, ctx: LayerContext) -> None:
-            events.append("start")
-
-        eng = Engine(
-            repo=Repo(layers=[web]), app=object(), name="web", base_image=fake_image()
-        )
-        asyncio.run(eng.create())
-
-        assert events == ["sync", "start"]
-        assert factory.created_kwargs["workdir"] == "/workspace/web"
+        assert events == ["layer", "inline"]
 
     def test_terminates_the_sandbox_when_a_start_hook_fails(
         self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
@@ -168,89 +121,91 @@ class TestCreate:
         sandbox = FakeSandbox()
         monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
 
-        web = Layer(name="web", source=StubRemote(working_directory="/workspace/web"))
+        class Boom(Layer):
+            def on_start(self, sandbox: Sandbox) -> None:
+                raise RuntimeError("boom")
 
-        @web.on_start
-        def _(box: object, ctx: LayerContext) -> None:
-            raise RuntimeError("boom")
-
-        eng = Engine(
-            repo=Repo(layers=[web]), app=object(), name="web", base_image=fake_image()
-        )
+        box = DevBox("web", layers=[Boom()])
         with pytest.raises(RuntimeError, match="boom"):
-            asyncio.run(eng.create())
+            asyncio.run(_engine(box, fake_image()).create())
 
         assert sandbox.terminated is True
 
 
+class TestTerminate:
+    def test_runs_terminate_hooks_then_kills_the_sandbox(
+        self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
+    ) -> None:
+        sandbox = FakeSandbox()
+        monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
+
+        events: list[str] = []
+
+        class Web(Layer):
+            def on_terminate(self, sandbox: Sandbox) -> None:
+                events.append("terminate")
+
+        eng = _engine(DevBox("web", layers=[Web()]), fake_image())
+        run = asyncio.run(eng.create())
+        asyncio.run(eng.terminate(run))
+
+        assert events == ["terminate"]
+        assert sandbox.terminated is True
+
+
 class TestSecrets:
-    def test_unions_common_secrets_with_repo_secrets(
+    def test_orders_common_secrets_before_box_secrets(
         self, fake_image: Callable[[], FakeImage]
     ) -> None:
         common = Secret.from_dict({"COMMON": "1"})
-        repo_secret = Secret.from_dict({"REPO": "2"})
-        web = Layer(
-            name="web",
-            source=StubRemote(working_directory="/workspace/web"),
-            runtime=Runtime(secrets={repo_secret}),
-        )
+        box_secret = Secret.from_dict({"BOX": "2"})
+        box = DevBox("web", layers=[Layer(secrets=(box_secret,))])
 
-        eng = Engine(
-            repo=Repo(layers=[web]),
-            app=object(),
-            name="web",
-            base_image=fake_image(),
-            secrets={common},
-        )
-
-        assert set(eng._secrets()) == {common, repo_secret}
+        eng = _engine(box, fake_image(), secrets=(common,))
+        assert eng._secrets() == [common, box_secret]
 
     def test_does_not_double_count_shared_secret(
         self, fake_image: Callable[[], FakeImage]
     ) -> None:
         shared = Secret.from_dict({"SHARED": "1"})
-        web = Layer(
-            name="web",
-            source=StubRemote(working_directory="/workspace/web"),
-            runtime=Runtime(secrets={shared}),
-        )
+        box = DevBox("web", layers=[Layer(secrets=(shared,))])
 
-        eng = Engine(
-            repo=Repo(layers=[web]),
-            app=object(),
-            name="web",
-            base_image=fake_image(),
-            secrets={shared},
-        )
+        eng = _engine(box, fake_image(), secrets=(shared,))
+        assert eng._secrets() == [shared]
 
-        secrets = eng._secrets()
-        assert secrets == [shared]
-
-    def test_create_passes_common_and_repo_secrets(
-        self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
+    def test_env_is_appended_as_a_final_secret(
+        self, fake_image: Callable[[], FakeImage]
     ) -> None:
-        sandbox = FakeSandbox()
-        factory = FakeSandboxFactory(sandbox)
-        monkeypatch.setattr(engine, "Sandbox", factory)
+        declared = Secret.from_dict({"A": "1"})
+        box = DevBox("web", layers=[Layer(env={"K": "V"}, secrets=(declared,))])
 
+        secrets = _engine(box, fake_image())._secrets()
+        assert secrets[0] is declared
+        assert len(secrets) == 2
+
+    def test_no_env_means_no_extra_secret(
+        self, fake_image: Callable[[], FakeImage]
+    ) -> None:
+        box = DevBox("web", layers=[Layer()])
+        assert _engine(box, fake_image())._secrets() == []
+
+
+class TestFromRegistry:
+    def test_wires_the_box_base_image_and_common_secrets(
+        self, fake_image: Callable[[], FakeImage]
+    ) -> None:
         common = Secret.from_dict({"COMMON": "1"})
-        repo_secret = Secret.from_dict({"REPO": "2"})
-        web = Layer(
-            name="web",
-            source=StubRemote(working_directory="/workspace/web"),
-            runtime=Runtime(secrets={repo_secret}),
-        )
+        base = fake_image()
+        registry = Registry(base_image=base, common_secrets=(common,))
+        box = registry.add(DevBox("web", layers=[Layer()]))
 
-        eng = Engine(
-            repo=Repo(layers=[web]),
-            app=object(),
-            name="web",
-            base_image=fake_image(),
-            secrets={common},
-        )
-        asyncio.run(eng.create())
+        app = object()
+        eng = Engine.from_registry(registry, "web", app)
 
-        assert set(factory.created_kwargs["secrets"]) == {common, repo_secret}
+        assert eng.box is box
+        assert eng.app is app
+        assert eng.base_image is base
+        assert eng.secrets == (common,)
 
 
 class FakeSidecarImage:
@@ -277,17 +232,14 @@ class FakeSidecarManager:
 
 
 class TestSidecars:
-    def test_create_never_touches_sidecars_when_source_has_none(
+    def test_create_never_touches_sidecars_when_no_layer_has_one(
         self, monkeypatch: pytest.MonkeyPatch, fake_image: Callable[[], FakeImage]
     ) -> None:
         sandbox = FakeSandbox()
         monkeypatch.setattr(engine, "Sandbox", FakeSandboxFactory(sandbox))
 
-        web = Layer(name="web", source=StubRemote(working_directory="/w"))
-        eng = Engine(
-            repo=Repo(layers=[web]), app=object(), name="web", base_image=fake_image()
-        )
-        asyncio.run(eng.create())
+        box = DevBox("web", layers=[Layer()])
+        asyncio.run(_engine(box, fake_image()).create())
 
         assert not hasattr(sandbox, "_experimental_sidecars")
 
@@ -305,31 +257,20 @@ class TestSidecars:
             image=FakeSidecarImage(events),
             command=["uvicorn", "app:app"],
             env={"GITHUB_APP_ACCOUNT": "acme"},
-            secrets=set(),
+            secrets=(),
         )
 
-        class SidecarRemote(Remote):
-            def provision(self, image: object) -> object:
-                return image
-
-            async def sync(self, box: object, ctx: LayerContext) -> None:
-                events.append("sync")
-
+        class Vaulted(Layer):
             def sidecar(self) -> SidecarSpec | None:
                 return spec
 
-        web = Layer(name="web", source=SidecarRemote(working_directory="/w"))
+            def on_start(self, sandbox: Sandbox) -> None:
+                events.append("start")
 
-        @web.on_start
-        def _(box: object, ctx: LayerContext) -> None:
-            events.append("start")
+        box = DevBox("web", layers=[Vaulted()])
+        asyncio.run(_engine(box, fake_image()).create())
 
-        eng = Engine(
-            repo=Repo(layers=[web]), app=object(), name="web", base_image=fake_image()
-        )
-        asyncio.run(eng.create())
-
-        assert events == ["build", "create", "sync", "start"]
+        assert events == ["build", "create", "start"]
         [created] = sandbox._experimental_sidecars.created
         assert created == {
             "args": ("uvicorn", "app:app"),

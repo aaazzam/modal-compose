@@ -37,8 +37,8 @@ def create_server(registry: Registry, *args: Any, **kwargs: Any) -> FastMCP:
     and shell tools are auto-discovered from the library's `tools/` via a
     `FileSystemProvider`; a caller `providers=` is merged after it rather than
     replacing it. The `create_sandbox` / `kill_sandbox` lifecycle tools are
-    wired here; only `create_sandbox` needs the registry, both to resolve a repo
-    name to its image and to generate its `repo` enum.
+    wired here; only `create_sandbox` needs the registry, both to resolve a
+    dev-box name to its image and to generate its `box` enum.
     """
     own_providers: list[Provider] = [FileSystemProvider(TOOLS_DIR)]
     caller_providers = kwargs.pop("providers", None) or []
@@ -46,29 +46,23 @@ def create_server(registry: Registry, *args: Any, **kwargs: Any) -> FastMCP:
     app_name = mcp.name or "modal-compose"
 
     async def create_sandbox(
-        repo: Annotated[
+        box: Annotated[
             str,
             Field(
-                description="Registered repo to launch.",
+                description="Registered dev-box to launch.",
                 json_schema_extra={"enum": list(registry.names())},
             ),
         ],
     ) -> str:
-        """Create a sandbox for a registered repo and return its sandbox_id.
+        """Create a sandbox for a registered dev-box and return its sandbox_id.
 
-        The repo's prebaked named image is used when available; otherwise the
+        The box's prebaked named image is used when available; otherwise the
         image is built on the request path and published for next time.
         """
         app = await modal.App.lookup.aio(app_name, create_if_missing=True)
-        engine = Engine(
-            repo=registry[repo],
-            app=app,
-            name=repo,
-            base_image=registry.base_image,
-            secrets=registry.common_secrets,
-        )
+        engine = Engine.from_registry(registry, box, app)
         try:
-            run = await engine.create(image=modal.Image.from_name(repo))
+            run = await engine.create(image=modal.Image.from_name(box))
         except NotFoundError:
             built = await engine.build()
             run = await engine.create(image=built)

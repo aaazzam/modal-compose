@@ -24,18 +24,18 @@ def scaffolded(tmp_path: Path):
 
 
 class TestScaffoldedServer:
-    def test_registry_mounts_the_example_repo(self, scaffolded: Path) -> None:
+    def test_registry_registers_the_example_box(self, scaffolded: Path) -> None:
         registry = importlib.import_module("devbox.registry").registry
         assert registry.names() == ("modal",)
 
-    def test_added_repo_mounts_and_imports(self, scaffolded: Path) -> None:
+    def test_added_box_registers_and_imports(self, scaffolded: Path) -> None:
         from modal_compose.cli import add
 
         add("octocat/widget", directory=scaffolded)
         importlib.invalidate_caches()
         registry = importlib.import_module("devbox.registry").registry
         assert set(registry.names()) == {"modal", "widget"}
-        assert registry["widget"].sources[0].repo == "octocat/widget"
+        assert registry["widget"].layers[0].repo == "octocat/widget"
 
     def test_server_exposes_lifecycle_tools(self, scaffolded: Path) -> None:
         mcp = importlib.import_module("devbox.services").mcp
@@ -53,13 +53,13 @@ class TestScaffoldedServer:
 
         assert {"bash", "edit", "glob", "grep", "read", "write"} <= asyncio.run(names())
 
-    def test_create_sandbox_repo_is_generated_from_the_registry(
+    def test_create_sandbox_box_is_generated_from_the_registry(
         self, scaffolded: Path
     ) -> None:
         mcp = importlib.import_module("devbox.services").mcp
 
         async def schema() -> dict[str, object]:
             tool = await mcp.get_tool("create_sandbox")
-            return tool.parameters["properties"]["repo"]
+            return tool.parameters["properties"]["box"]
 
         assert asyncio.run(schema())["enum"] == ["modal"]
