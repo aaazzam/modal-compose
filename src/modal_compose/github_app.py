@@ -5,6 +5,8 @@ import time
 import jwt
 import requests
 
+from .errors import GitHubAppNotInstalledError
+
 _JWT_CLOCK_SKEW_SECONDS = 60
 _JWT_TTL_SECONDS = 540
 
@@ -32,7 +34,9 @@ def mint_installation_token(
         (i for i in resp.json() if i["account"]["login"] == account), None
     )
     if installation is None:
-        raise LookupError(f"GitHub App is not installed on account {account!r}")
+        raise GitHubAppNotInstalledError(
+            f"GitHub App is not installed on account {account!r}"
+        )
 
     token_resp = requests.post(
         f"https://api.github.com/app/installations/{installation['id']}/access_tokens",
