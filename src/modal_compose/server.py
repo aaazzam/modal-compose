@@ -12,9 +12,10 @@ from fastmcp.server.providers import (
 )
 from mcp.types import ToolAnnotations
 from modal.exception import NotFoundError
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from .engine import Engine, terminate_sandbox
+from .errors import NotOurSandboxError
 from .registry import Registry
 
 if TYPE_CHECKING:
@@ -22,6 +23,14 @@ if TYPE_CHECKING:
     from fastmcp.server.middleware import Middleware
 
 TOOLS_DIR = Path(__file__).parent / "tools"
+
+
+class SandboxInfo(BaseModel):
+    """What `create_sandbox` returns: where the new sandbox is and how to address it."""
+
+    sandbox_id: str
+    box: str
+    workdir: str | None
 
 
 class DevBoxProvider(AggregateProvider):
@@ -50,7 +59,7 @@ class DevBoxProvider(AggregateProvider):
         )
         super().__init__(providers=[local, FileSystemProvider(TOOLS_DIR)])
 
-    def _create_sandbox(self) -> Callable[..., Coroutine[Any, Any, str]]:
+    def _create_sandbox(self) -> Callable[..., Coroutine[Any, Any, SandboxInfo]]:
         registry = self.registry
 
         async def create_sandbox(
@@ -61,13 +70,16 @@ class DevBoxProvider(AggregateProvider):
                     json_schema_extra={"enum": list(registry)},
                 ),
             ],
-        ) -> str:
-            """Create a sandbox for a registered dev-box and return its sandbox_id.
+        ) -> SandboxInfo:
+            """Create a sandbox for a registered dev-box.
 
-            The box's prebaked named image is used when available; otherwise the
-            image is built on the request path and published for next time —
-            expect that cold first launch to take minutes, so retry once with
-            a generous timeout if this call times out.
+            Returns the new sandbox's `sandbox_id` (pass it to the other
+            tools), the `box` it was launched from, and the `workdir` where
+            the box's code lives. The box's prebaked named image is used when
+            available; otherwise the image is built on the request path and
+            published for next time — expect that cold first launch to take
+            minutes, so retry once with a generous timeout if this call times
+            out.
             """
             app = await modal.App.lookup.aio(registry.name, create_if_missing=True)
             engine = Engine.from_registry(registry, box, app)
@@ -77,7 +89,9 @@ class DevBoxProvider(AggregateProvider):
             except NotFoundError:
                 built = await engine.build()
                 run = await engine.create(image=built)
-            return run.sandbox_id
+            return SandboxInfo(
+                sandbox_id=run.sandbox_id, box=box, workdir=engine.box.workdir
+            )
 
         return create_sandbox
 
@@ -96,7 +110,7 @@ class DevBoxProvider(AggregateProvider):
             tags = await sandbox.get_tags.aio()
             name = tags.get("box")
             if name is None or name not in registry:
-                raise ValueError(
+                raise NotOurSandboxError(
                     f"sandbox {sandbox_id!r} was not created by this server "
                     f"(no registered dev-box matches its tags)"
                 )
