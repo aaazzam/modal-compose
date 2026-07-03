@@ -5,7 +5,9 @@ from shlex import quote
 from modal import Image, Sandbox, Secret
 from pydantic import model_validator
 
+from .errors import InvalidRepoError
 from .layer import Layer, SidecarSpec
+from .toolbox import run_command_async
 
 _GITHUB_VAULT_NAME = "github-credential-vault"
 _GITHUB_VAULT_PORT = 8765
@@ -21,7 +23,7 @@ def normalize_repo(repo: str) -> str:
             break
     owner, _, name = text.strip("/").partition("/")
     if not owner or not name or "/" in name:
-        raise ValueError(f"expected a GitHub repo like 'owner/name', got {repo!r}")
+        raise InvalidRepoError(f"expected a GitHub repo like 'owner/name', got {repo!r}")
     return f"{owner}/{name}"
 
 
@@ -31,13 +33,18 @@ def default_workdir(repo: str) -> str:
 
 
 class GitHub(Layer):
-    """A layer that clones a GitHub repo at build time and `git pull`s it on start.
+    """A layer that clones a GitHub repo at build time and refreshes it on start.
 
     `repo` accepts an `owner/name` slug or a GitHub URL and is normalized to
-    the slug. `workdir` defaults to `/workspace/<name>`. Private repos are
-    cloned with a short-lived GitHub App installation token (minted during the
-    build, scrubbed from the git config afterwards); at runtime a credential
-    vault sidecar brokers fresh tokens to git via a credential helper.
+    the slug. `ref` may be a branch, tag, or commit SHA: the build clones the
+    repo and checks the ref out, and on start the checkout is refreshed with
+    `git pull --ff-only` when it is on a branch (tag and SHA checkouts are
+    detached, so they stay pinned). `workdir` defaults to `/workspace/<name>`.
+
+    Private repos (`private=True`) are cloned with a short-lived GitHub App
+    installation token (minted during the build, scrubbed from the git config
+    afterwards); at runtime a credential vault sidecar brokers fresh tokens to
+    git via a credential helper. Public repos get no sidecar and no helper.
     """
 
     repo: str
@@ -55,11 +62,15 @@ class GitHub(Layer):
     def _checkout(self) -> str:
         return self.workdir or default_workdir(self.repo)
 
+    @property
+    def _switch_to_ref(self) -> str:
+        return f"git -C {quote(self._checkout)} checkout --quiet {quote(self.ref)}"
+
     def build(self, image: Image) -> Image:
         url = f"https://github.com/{self.repo}.git"
         if not self.private:
             return image.run_commands(
-                f"git clone --branch {quote(self.ref)} {url} {quote(self._checkout)}"
+                f"git clone {url} {quote(self._checkout)} && {self._switch_to_ref}"
             )
         return self._build_private(image, url)
 
@@ -67,7 +78,7 @@ class GitHub(Layer):
         account, name = self.repo.split("/", 1)
         mint = f"TOKEN=$(python3 -m modal_compose.github_app {quote(account)} {quote(name)})"
         clone = (
-            f"git clone --branch {quote(self.ref)} "
+            f"git clone "
             f"https://x-access-token:${{TOKEN}}@github.com/{self.repo}.git "
             f"{quote(self._checkout)}"
         )
@@ -76,23 +87,35 @@ class GitHub(Layer):
             image.pip_install("pyjwt", "cryptography", "requests")
             .add_local_python_source("modal_compose", copy=True)
             .run_commands(
-                " && ".join((mint, clone, scrub)),
+                " && ".join((mint, clone, self._switch_to_ref, scrub)),
                 secrets=[Secret.from_name(_GITHUB_APP_SECRET_NAME)],
             )
         )
 
     async def on_start(self, sandbox: Sandbox) -> None:
-        await sandbox.exec.aio(
-            "git",
-            "-C",
-            self._checkout,
-            "config",
-            "credential.helper",
-            self._credential_helper(),
+        if self.private:
+            configure = await run_command_async(
+                sandbox,
+                "git",
+                "-C",
+                self._checkout,
+                "config",
+                "credential.helper",
+                self._credential_helper(),
+            )
+            configure.check()
+        on_branch = await run_command_async(
+            sandbox, "git", "-C", self._checkout, "symbolic-ref", "-q", "HEAD"
         )
-        await sandbox.exec.aio("git", "-C", self._checkout, "pull", "--ff-only")
+        if on_branch.ok:
+            pull = await run_command_async(
+                sandbox, "git", "-C", self._checkout, "pull", "--ff-only"
+            )
+            pull.check()
 
     def sidecar(self) -> SidecarSpec | None:
+        if not self.private:
+            return None
         account, name = self.repo.split("/", 1)
         image = (
             Image.debian_slim()
