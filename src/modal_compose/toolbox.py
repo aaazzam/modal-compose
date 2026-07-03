@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from shlex import join as shlex_join
 
 import modal
+
+from .errors import SandboxCommandError
 
 READ_MAX_LINES = 2000
 READ_MAX_LINE_LENGTH = 2000
@@ -23,10 +26,20 @@ class CommandResult:
     stdout: str
     stderr: str
     returncode: int
+    command: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
         return self.returncode == 0
+
+    def check(self) -> "CommandResult":
+        """Return the result if the command succeeded, else raise `SandboxCommandError`."""
+        if self.ok:
+            return self
+        rendered = shlex_join(self.command) or "<command>"
+        detail = self.stderr.strip() or self.stdout.strip()
+        message = f"{rendered!r} exited with status {self.returncode}"
+        raise SandboxCommandError(f"{message}: {detail}" if detail else message)
 
     def merged_output(self) -> str:
         """Return stdout and stderr as one clean stream."""
@@ -85,4 +98,21 @@ def run_command(
     stdout = proc.stdout.read()
     stderr = proc.stderr.read()
     proc.wait()
-    return CommandResult(stdout=stdout, stderr=stderr, returncode=proc.returncode)
+    return CommandResult(
+        stdout=stdout, stderr=stderr, returncode=proc.returncode, command=args
+    )
+
+
+async def run_command_async(
+    sb: modal.Sandbox,
+    *args: str,
+    timeout: int | None = None,
+) -> CommandResult:
+    """Async twin of `run_command`: run a command and capture its output."""
+    proc = await sb.exec.aio(*args, timeout=timeout)
+    stdout = await proc.stdout.read.aio()
+    stderr = await proc.stderr.read.aio()
+    await proc.wait.aio()
+    return CommandResult(
+        stdout=stdout, stderr=stderr, returncode=proc.returncode, command=args
+    )
