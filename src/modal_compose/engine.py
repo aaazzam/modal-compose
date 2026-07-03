@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import anyio
+from anyio.from_thread import start_blocking_portal
 from modal import App, Sandbox, Secret
 
 from .devbox import DevBox
+from .toolbox import CommandResult, run_command_async
 
 if TYPE_CHECKING:
     from modal import Image
-    from modal.container_process import ContainerProcess
 
     from .registry import Registry
 
@@ -47,8 +48,8 @@ class Run:
         tunnels = await self.sandbox.tunnels.aio()
         return {port: tunnel.url for port, tunnel in tunnels.items()}
 
-    async def exec(self, *command: str) -> "ContainerProcess[str]":
-        return await self.sandbox.exec.aio(*command)
+    async def exec(self, *command: str) -> CommandResult:
+        return await run_command_async(self.sandbox, *command)
 
     async def terminate(self) -> None:
         await self.engine.terminate(self)
@@ -63,7 +64,9 @@ class Engine:
     namespaces it), `create()` launches the sandbox (with sidecars, then each
     layer's `on_start` in declaration order), and `terminate()` runs each
     layer's `on_terminate` before killing the sandbox. `run()` wraps
-    `create()`/`terminate()` as an async context manager.
+    `create()`/`terminate()` as an async context manager, and `run_sync()` is
+    its blocking twin for plain scripts (inside the block, use Modal's
+    synchronous `Sandbox` API on `run.sandbox`).
     """
 
     box: DevBox
@@ -132,6 +135,15 @@ class Engine:
         finally:
             with anyio.CancelScope(shield=True):
                 await self.terminate(run)
+
+    @contextmanager
+    def run_sync(self, image: "Image | None" = None) -> Iterator[Run]:
+        with start_blocking_portal() as portal:
+            run = portal.call(self.create, image)
+            try:
+                yield run
+            finally:
+                portal.call(self.terminate, run)
 
     async def _create_sidecars(self, sandbox: Sandbox) -> None:
         for spec in self.box.sidecars:
