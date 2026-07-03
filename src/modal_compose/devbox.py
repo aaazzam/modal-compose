@@ -36,8 +36,9 @@ class DevBox:
     The image is built by folding each layer's `build` over the base image in
     declaration order; `env` merges across layers with later layers winning;
     `ports` and `secrets` accumulate in declaration order. `workdir` is where
-    the sandbox starts: pass it explicitly or it is derived from the first
-    layer that declares one (a `GitHub` layer always does).
+    the sandbox starts: pass it explicitly or it is derived from the last
+    layer that declares one (a `GitHub` layer always does), mirroring how
+    `env` merges.
 
     `timeout`, `cpu`, `memory`, and `gpu` size the sandbox: `timeout` is the
     sandbox lifetime in seconds, and the rest are passed straight through to
@@ -96,12 +97,20 @@ class DevBox:
         self.gpu = gpu
         self._workdir = workdir
 
+    def __repr__(self) -> str:
+        return f"DevBox({self.name!r}, layers={self.layers!r})"
+
     @property
     def workdir(self) -> str | None:
         if self._workdir is not None:
             return self._workdir
         return next(
-            (layer.workdir for layer in self.layers if layer.workdir is not None), None
+            (
+                layer.workdir
+                for layer in reversed(self.layers)
+                if layer.workdir is not None
+            ),
+            None,
         )
 
     def image(self, base: Image) -> Image:
