@@ -3,9 +3,9 @@
 The `GitHub` layer clones the repo into the image at build time and refreshes
 it with `git pull` each time a sandbox starts; its `workdir` defaults to
 /workspace/modal-client. The `install` build step editable-installs the client
-(it lives under `py/` in that monorepo). `registry.py` registers the `box`
-defined here under the name `modal`. (An absolute `import modal` below
-resolves to the real package, not this module.)
+(it lives under `py/` in that monorepo). `registry.py` discovers this module
+and registers the `box` defined here under the name `modal`. (An absolute
+`import modal` below resolves to the real package, not this module.)
 
 modal-client generates its protobuf bindings rather than committing them, so a
 bare editable install leaves `import modal` failing on `modal_proto.api_pb2`.

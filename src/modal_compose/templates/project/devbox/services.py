@@ -33,8 +33,7 @@ def serve() -> object:
 @app.function(image=image, retries=3, timeout=30 * 60)
 def build_one(name: str) -> None:
     build_app = modal.App.lookup(registry.name, create_if_missing=True)
-    built = registry.image_for(name).build(build_app)
-    built.publish(registry.image_name_for(name))
+    registry.build(name, build_app)
 
 
 @app.function(image=image, schedule=modal.Cron("*/30 * * * *"), timeout=60 * 60)
