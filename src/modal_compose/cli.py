@@ -6,7 +6,7 @@ import shutil
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from types import ModuleType
+from typing import Any
 
 import cyclopts
 
@@ -33,7 +33,8 @@ TEMPLATES = Path(__file__).parent / "templates" / "project"
 _BOX_MODULE = '''"""Dev-box for {repo}: clones it into a sandbox to hack on.
 
 The `GitHub` layer clones the repo at build time and `git pull`s it on start
-(its `workdir` defaults to /workspace/<name>). Stack more layers or add a
+(its `workdir` defaults to /workspace/<name>). `registry.py` discovers this
+module and registers `box` automatically. Stack more layers or add a
 `build=` step the way `repos/modal.py` does.
 """
 
@@ -60,43 +61,31 @@ def _module_name(repo: str, name: str | None) -> str:
     return slug
 
 
-def _register_in_registry(registry_file: Path, name: str) -> None:
-    lines = registry_file.read_text(encoding="utf-8").splitlines()
-    import_line = f"from .repos import {name}"
-    if import_line not in lines:
-        index = None
-        for i, line in enumerate(lines):
-            if line.startswith("from .repos import "):
-                index = i + 1
-        if index is None:
-            for i, line in enumerate(lines):
-                if "import Registry" in line:
-                    index = i + 1
-                    break
-        lines.insert(len(lines) if index is None else index, import_line)
-    text = "\n".join(lines).rstrip("\n") + "\n"
-    add_line = f"registry.add({name}.box)\n"
-    if add_line not in text:
-        text += add_line
-    registry_file.write_text(text, encoding="utf-8")
-
-
-def _load_project_module(directory: Path, module: str) -> ModuleType:
-    target = directory.resolve()
-    if not (target / "devbox").is_dir():
+def _load_target(directory: Path, target: str) -> Any:
+    module_name, _, attribute = target.partition(":")
+    if not module_name or not attribute:
+        raise SystemExit(f"expected a target like 'module:attribute', got {target!r}")
+    path = str(directory.resolve())
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError as error:
         raise SystemExit(
-            f"no dev-box project in {target}; run `modal-compose init` first"
-        )
-    if str(target) not in sys.path:
-        sys.path.insert(0, str(target))
-    return importlib.import_module(module)
+            f"could not import {module_name!r} from {path} ({error}); "
+            "run `modal-compose init` first or point at your project with "
+            "'module:attribute'"
+        ) from None
+    value = getattr(module, attribute, None)
+    if value is None:
+        raise SystemExit(f"{module_name!r} does not define {attribute!r}")
+    return value
 
 
-def _load_registry(directory: Path) -> Registry:
-    module = _load_project_module(directory, "devbox.registry")
-    registry = getattr(module, "registry", None)
+def _load_registry(directory: Path, target: str) -> Registry:
+    registry = _load_target(directory, target)
     if not isinstance(registry, Registry):
-        raise SystemExit("devbox/registry.py does not define `registry = Registry(...)`")
+        raise SystemExit(f"{target!r} is not a modal_compose.Registry")
     return registry
 
 
@@ -135,8 +124,7 @@ def add(
     module = _module_name(full, name)
     target = directory.resolve()
     repos_dir = target / "devbox" / "repos"
-    registry_file = target / "devbox" / "registry.py"
-    if not repos_dir.is_dir() or not registry_file.is_file():
+    if not repos_dir.is_dir():
         raise SystemExit(f"no dev-box project in {target}; run `modal-compose init` first")
     module_path = repos_dir / f"{module}.py"
     if module_path.exists() and not force:
@@ -145,37 +133,43 @@ def add(
         _BOX_MODULE.format(repo=full, name=module, ref=ref),
         encoding="utf-8",
     )
-    _register_in_registry(registry_file, module)
     print(f"added {full!r} as {module!r}")
     print(f"  devbox/repos/{module}.py")
-    print("  registered in devbox/registry.py")
+    print("  discovered by devbox/registry.py on import")
 
 
 @app.command(name="list")
-def list_boxes(*, directory: Path = Path(".")) -> None:
-    """List the dev-boxes registered in DIRECTORY's project."""
-    registry = _load_registry(directory)
-    if not registry:
+def list_boxes(
+    *,
+    directory: Path = Path("."),
+    registry: str = "devbox.registry:registry",
+) -> None:
+    """List the dev-boxes registered in DIRECTORY's project.
+
+    REGISTRY is a 'module:attribute' target naming the `Registry` to load.
+    """
+    boxes = _load_registry(directory, registry)
+    if not boxes:
         print("no dev-boxes registered")
         return
-    print(f"registry {registry.name!r} ({len(registry)} dev-box(es))")
-    for name, box in registry.items():
+    print(f"registry {boxes.name!r} ({len(boxes)} dev-box(es))")
+    for name, box in boxes.items():
         layers = ", ".join(_describe_layer(layer) for layer in box.layers)
         print(f"  {name}  layers=[{layers}]  workdir={box.workdir or '-'}")
 
 
 @app.command
 def dev(
+    target: str = "devbox.services:mcp",
     *,
     directory: Path = Path("."),
     host: str = "127.0.0.1",
     port: int = 8000,
 ) -> None:
-    """Run the project's MCP server locally over HTTP for development."""
-    services = _load_project_module(directory, "devbox.services")
-    mcp = getattr(services, "mcp", None)
-    if mcp is None:
-        raise SystemExit("devbox/services.py does not define `mcp`")
+    """Run the MCP server named by TARGET ('module:attribute') locally over HTTP."""
+    mcp = _load_target(directory, target)
+    if not callable(getattr(mcp, "run", None)):
+        raise SystemExit(f"{target!r} is not a FastMCP server")
     mcp.run(transport="http", host=host, port=port)
 
 
@@ -184,34 +178,40 @@ def build(
     names: list[str] | None = None,
     *,
     directory: Path = Path("."),
+    registry: str = "devbox.registry:registry",
 ) -> None:
-    """Build and publish prebaked images for NAMES (defaults to every dev-box)."""
+    """Build and publish prebaked images for NAMES (defaults to every dev-box).
+
+    REGISTRY is a 'module:attribute' target naming the `Registry` to load.
+    """
     import modal
 
-    registry = _load_registry(directory)
-    targets = names or list(registry)
-    unknown = sorted(set(targets) - set(registry))
+    boxes = _load_registry(directory, registry)
+    targets = names or list(boxes)
+    unknown = sorted(set(targets) - set(boxes))
     if unknown:
-        known = ", ".join(registry) or "none"
+        known = ", ".join(boxes) or "none"
         raise SystemExit(
             f"unknown dev-box(es): {', '.join(unknown)} (registered: {known})"
         )
-    build_app = modal.App.lookup(registry.name, create_if_missing=True)
+    build_app = modal.App.lookup(boxes.name, create_if_missing=True)
     for name in targets:
-        image_name = registry.image_name_for(name)
+        image_name = boxes.image_name_for(name)
         print(f"building {name!r} -> {image_name!r}")
-        built = registry.image_for(name).build(build_app)
-        built.publish(image_name)
+        boxes.build(name, build_app)
         print(f"  published {image_name!r}")
 
 
 @app.command
-def deploy(*, directory: Path = Path(".")) -> None:
-    """Deploy the project's Modal app (the MCP server plus the prebake cron)."""
-    services = _load_project_module(directory, "devbox.services")
-    modal_app = getattr(services, "app", None)
-    if modal_app is None:
-        raise SystemExit("devbox/services.py does not define a Modal `app`")
+def deploy(
+    target: str = "devbox.services:app",
+    *,
+    directory: Path = Path("."),
+) -> None:
+    """Deploy the Modal app named by TARGET ('module:attribute')."""
+    modal_app = _load_target(directory, target)
+    if not callable(getattr(modal_app, "deploy", None)):
+        raise SystemExit(f"{target!r} is not a Modal app")
     modal_app.deploy()
 
 
